@@ -1,0 +1,33 @@
+# C++ engine build artifacts
+engine/build/
+engine/CMakeFiles/
+engine/CMakeCache.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Flutter / Dart
+client/build/
+client/.dart_tool/
+client/.flutter-plugins
+client/.flutter-plugins-dependencies
+client/.packages
+client/pubspec.lock
+client/windows/flutter/ephemeral/
+client/linux/flutter/ephemeral/
+client/macos/Flutter/ephemeral/
+client/.idea/
+*.iml
+
+# Local runtime data
+.env
+*.local
+
+# OS junk
+.DS_Store
+Thumbs.db
