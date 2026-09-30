@@ -1,0 +1,4 @@
+TODO:
+- Clean up temp files
+- Rename old_report.csv to report_2026.csv
+- Check disk usage
