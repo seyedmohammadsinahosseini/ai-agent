@@ -1,40 +1,94 @@
-# معماری AI Terminal (PoC)
+# AI Terminal - Architecture
 
-## لایه‌ها
+## Layers
 
 ```
 Flutter UI  <--HTTP/WebSocket-->  FastAPI (Python)  <--pybind11-->  C++ Engine
    client/                           server/                          engine/
 ```
 
-- **engine/** : ماژول C++ که با pybind11 به پایتون export می‌شه.
-  - `pty_session`: اجرای دستور در یک pseudo-terminal (روی ویندوز نهایی: ConPTY، روی این
-    محیط توسعه/لینوکس: POSIX forkpty برای تست).
-  - `risk_classifier`: تابع C++ خالص و deterministic که هر دستور را به یکی از سه سطح
-    ریسک `SAFE` / `CONFIRM` / `DANGEROUS` طبقه‌بندی می‌کند. این لایه کاملاً مستقل از
-    خروجی مدل هوش مصنوعی است (دفاع لایه‌به‌لایه در برابر اشتباه/injection مدل).
+- **engine/**: a C++ module exported to Python via pybind11.
+  - `pty_session`: runs a command inside a real pseudo-terminal. On the
+    native Windows build this uses ConPTY (`CreatePseudoConsole`); on
+    Linux/macOS (used for development and testing) it uses POSIX `forkpty`.
+    Both branches expose the same API (`run`, `run_in_dir`, `start_async`,
+    `start_async_in_dir`, `kill_execution`), so the rest of the app doesn't
+    need to know or care which platform it's running on.
+  - `risk_classifier`: a pure, deterministic C++ function that classifies
+    every command into one of `SAFE` / `CONFIRM` / `DANGEROUS` / `BLOCKED`.
+    This layer is completely independent of the AI model's own output - it's
+    a defense-in-depth measure against a model mistake or a prompt
+    injection attempt.
 
-- **server/** : سرویس FastAPI که روی `127.0.0.1` بالا می‌آید.
-  - `/chat` : پیام کاربر را می‌گیرد، به مدل AI (OpenAI/Claude/Gemini - BYOK) می‌فرستد و
-    دستور پیشنهادی را برمی‌گرداند.
-  - `/execute` : دستور را از طریق موتور C++ ریسک‌سنجی و در صورت لزوم اجرا می‌کند.
-  - `/ws/terminal` : کانال WebSocket برای استریم زنده‌ی خروجی ترمینال.
-  - احراز هویت با یک توکن محلی تصادفی (فقط localhost).
+- **server/**: a FastAPI service that only listens on `127.0.0.1`.
+  - `/chat`: takes the user's message, forwards it (plus the current
+    Plan/Build mode and working directory) to the configured AI provider
+    (OpenAI/Anthropic/Gemini, or any custom OpenAI-API-compatible provider -
+    BYOK throughout), and returns the model's suggested command, if any.
+  - `/execute`: runs a command through the C++ risk classifier and, if
+    authorized, actually executes it.
+  - `/ws/execute`: a WebSocket channel for streaming live command output
+    back to the client as it's produced.
+  - `/providers/status`, `/providers/api-key`, `/providers/custom`: manage
+    BYOK credentials, including arbitrary custom providers added by URL.
+  - `/workspace/browse`, `/workspace/select`: let the user pick which folder
+    the agent is allowed to operate in.
+  - `/uploads`: handles file uploads, tagged as either AI context or content
+    to place into the working folder.
+  - Authentication is a random local bearer token (generated on first run
+    and never exposed outside localhost).
 
-- **client/** : اپ Flutter (در نسخه نهایی Windows Desktop، در این PoC هدف Web برای
-  پیش‌نمایش در سندباکس).
+- **client/**: the Flutter app. Runs as a native Windows desktop window in
+  the final build (`flutter run -d windows` / `flutter build windows`); a
+  Web build is also available for quick previewing without a Windows
+  machine (served directly by the FastAPI server).
 
-## جریان یک درخواست (مثال)
-1. کاربر در چت می‌نویسد: «فایل‌های قدیمی توی Downloads رو پاک کن»
-2. FastAPI این متن را با تاریخچه به مدل AI می‌فرستد؛ مدل دستور پیشنهادی
-   (مثلاً `Remove-Item -Recurse ...`) را برمی‌گرداند، همراه با توضیح فارسی ساده.
-3. FastAPI دستور را به `risk_classifier` (C++) می‌دهد.
-4. اگر `SAFE` → بلافاصله اجرا و خروجی استریم می‌شود.
-   اگر `CONFIRM` یا `DANGEROUS` → به کاربر در UI نمایش داده می‌شود و منتظر تایید می‌ماند.
-5. خروجی دستور (ConPTY/PTY) به صورت زنده روی WebSocket به Flutter پخش می‌شود.
+## Anatomy of a request
 
-## نکات امنیتی پیاده‌سازی‌شده در PoC
-- Risk classification در C++ (نه صرفاً در پرامپت مدل).
-- توکن API به‌صورت جداگانه ذخیره می‌شود، نه هاردکد در کد.
-- عدم استفاده از `shell=True` / string concatenation برای اجرای دستور.
-- API فقط روی loopback (127.0.0.1) گوش می‌دهد و هر درخواست نیازمند Bearer token محلی است.
+1. The user types, in the chat: "clean up the old files in Downloads."
+2. FastAPI sends this message (with conversation history, the active
+   Plan/Build mode, and the selected working folder) to the configured AI
+   provider. The model returns a suggested command (e.g.
+   `Remove-Item -Recurse ...`) plus a plain-language explanation.
+3. FastAPI passes the command to the C++ `risk_classifier`.
+4. If the mode is **Plan**, anything beyond a safe, read-only command is
+   rejected server-side, regardless of what the model suggested - this is a
+   hard gate, not just a UI restriction.
+5. In **Build** mode: `SAFE` commands run immediately and stream their
+   output; `CONFIRM` or `DANGEROUS` commands are shown to the user in the UI
+   and wait for explicit confirmation (dangerous ones require typing a
+   confirmation phrase).
+6. The command's live output (via ConPTY/PTY) is streamed to the Flutter
+   client over the WebSocket connection.
+
+## Multi-provider model support (BYOK)
+
+- Built-in presets (OpenAI, Anthropic, Gemini) each have a small hardcoded
+  model catalog and a dedicated request/response adapter, since each speaks
+  a slightly different API shape.
+- Any other company that exposes an OpenAI-compatible `/chat/completions`
+  endpoint can be connected as a **custom provider**: the user supplies a
+  label, base URL, and API key. The server tries `GET {base_url}/models` to
+  auto-detect which models the key can access; if that isn't supported, the
+  user can type a model id manually. Custom providers are addressed
+  internally as `custom:<slug>` and flow through the exact same risk
+  classification and mode-gating pipeline as the built-in ones - there's no
+  separate, weaker code path for them.
+
+## Security measures implemented so far
+
+- Risk classification lives in C++, not just in the model's system prompt.
+- Plan-mode read-only enforcement happens server-side
+  (`execution_service.authorize()`), independent of the AI model's output.
+- Working directories and commands are passed to the native engine directly
+  (no shell string concatenation / `cd &&` prefixing), avoiding a whole
+  class of shell-injection bugs.
+- API keys are stored via the OS credential store (`keyring`, which uses
+  Windows Credential Manager/DPAPI on Windows) rather than hardcoded or
+  stored in plaintext config.
+- The API only listens on loopback (`127.0.0.1`), and every request requires
+  a local bearer token generated on first run.
+
+## Known gaps (tracked, not yet implemented)
+
+See the "Deliberately simplified" section of the top-level `README.md`.

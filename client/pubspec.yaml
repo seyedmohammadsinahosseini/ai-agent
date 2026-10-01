@@ -21,10 +21,11 @@ version: 1.0.0+1
 environment:
   sdk: ^3.5.4
 
-# وابستگی‌های اصلی این PoC:
-#   http           -> ارتباط با FastAPI (لایه‌ی سرور)
-#   web_socket_channel -> استریم زنده‌ی خروجی ترمینال
-#   flutter_secure_storage -> ذخیره‌ی امن توکن محلی سمت کلاینت (روی ویندوز از DPAPI استفاده می‌کند)
+# Core dependencies of this app:
+#   http                    -> talks to the FastAPI server layer
+#   web_socket_channel      -> live streaming of terminal output
+#   flutter_secure_storage  -> secure local-token storage on the client side
+#                              (uses DPAPI on Windows)
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
