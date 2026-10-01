@@ -52,39 +52,82 @@ During install, check **"Add python.exe to PATH"**.
    flutter config --enable-windows-desktop
    ```
 
-## 2. Build the C++ engine (native Windows/ConPTY build)
+## 2. Create one Python environment for both build and runtime
 
-Open **PowerShell** in the project folder:
+Open **PowerShell** in the repository root. Do not mix a globally installed
+pybind11 from one Python version with a different Python selected by CMake.
 
 ```powershell
-cd ai-terminal\engine
-mkdir build
-cd build
+cd C:\path\to\ai-terminal
 
-# Find pybind11's cmake dir (pip install pybind11 first if needed)
-pip install pybind11 cmake
+# Create and activate an isolated environment using your current Python.
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 
-cmake -Dpybind11_DIR="$(python -c 'import pybind11; print(pybind11.get_cmake_dir())')" ..
-cmake --build . --config Release
+python -m pip install --upgrade pip
+python -m pip install -r server\requirements.txt pybind11 cmake
+
+# These three paths must all point inside the same .venv/Python installation.
+python -c "import sys; print(sys.executable)"
+python -c "import pybind11; print(pybind11.__file__)"
+python -c "import pybind11; print(pybind11.get_cmake_dir())"
 ```
 
-If this succeeds, you should have a file like:
+If PowerShell blocks environment activation, run this once for the current
+process and activate again:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
 ```
+
+## 3. Build the C++ engine (native Windows/ConPTY build)
+
+Run these commands from the repository root with `.venv` still active:
+
+```powershell
+$pythonExe = (Get-Command python).Source
+$pybind11Dir = python -c "import pybind11; print(pybind11.get_cmake_dir())"
+
+# Always remove a build directory previously configured with another Python,
+# generator, architecture, or source revision.
+if (Test-Path engine\build) {
+    Remove-Item -Recurse -Force engine\build
+}
+
+cmake -S engine -B engine\build `
+  -DPython_EXECUTABLE="$pythonExe" `
+  -Dpybind11_DIR="$pybind11Dir" `
+  -DBUILD_TESTING=ON
+
+cmake --build engine\build --config Release
+ctest --test-dir engine\build -C Release --output-on-failure
+```
+
+A successful build produces files similar to:
+
+```text
 engine\build\Release\aiterm_engine.cp3XX-win_amd64.pyd
+engine\build\Release\risk_classifier_test.exe
+engine\build\Release\pty_session_test.exe
 ```
 
-This `.pyd` file is the real Windows build — it uses `CreatePseudoConsole`
-(ConPTY) instead of the Linux `forkpty` path, because `pty_session.hpp` picks
-the right implementation automatically based on `#if defined(_WIN32)`.
+The `.pyd` filename must match the Python version printed by
+`python -c "import sys; print(sys.version)"`. This native Windows build uses
+ConPTY and a Windows Job Object for process-tree termination.
 
-> **Note:** `engine_bridge.py` already looks in `engine/build/Release/`,
-> `RelWithDebInfo/`, and `Debug/` automatically, so no path editing is needed.
+`engine_bridge.py` searches `engine/build/Release/`, `RelWithDebInfo/`, and
+`Debug/` automatically, so no manual `PYTHONPATH` change is needed.
 
-## 3. Set up and run the backend (FastAPI)
+> The CMake messages about failing to find `pthread` are normal with MSVC.
+> CMake ultimately reports `Found Threads: TRUE` using native Windows threads.
+
+## 4. Set up and run the backend (FastAPI)
+
+Keep the same `.venv` active:
 
 ```powershell
-cd ..\..\server
-pip install -r requirements.txt
+cd server
 python -m app.main
 ```
 
@@ -101,12 +144,12 @@ Leave this window running — it's your local API server. Note this defaults
 to `host="127.0.0.1"` in the real build (loopback-only), unlike the sandbox
 preview which had to bind `0.0.0.0` to be reachable through the proxy.
 
-## 4. Run the Flutter app as a native Windows window
+## 5. Run the Flutter app as a native Windows window
 
 Open a **second** PowerShell window:
 
 ```powershell
-cd ai-terminal\client
+cd C:\path\to\ai-terminal\client
 flutter pub get
 flutter run -d windows
 ```
@@ -121,7 +164,7 @@ flutter build windows
 # Output executable + DLLs land in: client\build\windows\x64\runner\Release\
 ```
 
-## 5. First run checklist
+## 6. First run checklist
 
 1. Click the **key icon** (top right) → add an API key for at least one
    provider (OpenAI, Anthropic, or Gemini — bring your own key).
@@ -153,15 +196,51 @@ flutter build windows
 
 ## If something doesn't build
 
-The most common issues:
-- `cmake` can't find pybind11 → make sure you ran `pip install pybind11` with
-  the *same* Python that's on your PATH (check with `python -m pip show pybind11`).
-- `flutter doctor` shows a red X next to Visual Studio → re-run the VS
-  Installer, make sure "Desktop development with C++" is checked, restart
-  your terminal.
-- The `.pyd` file has a different Python version tag than your `python`
-  (e.g. built for 3.12 but you're running 3.11) → rebuild the engine with
-  the same Python version FastAPI is using, or create a venv and use it
-  consistently for both.
+### MSVC error C2589 in `pty_session.hpp`
 
-Send me any error output and I'll help debug it directly.
+Pull the latest source. Older revisions allowed the `min` macro from
+`windows.h` to collide with `std::min`. The header now defines `NOMINMAX` before
+including the Windows SDK.
+
+```powershell
+git pull
+if (Test-Path engine\build) { Remove-Item -Recurse -Force engine\build }
+```
+
+Then repeat section 3 from a correctly activated `.venv`.
+
+### CTest cannot find `risk_classifier_test.exe` or `pty_session_test.exe`
+
+This is normally a consequence of the preceding C++ build failure. CTest does
+not build missing executables. Fix the first compiler error, run
+`cmake --build ... --config Release` successfully, and only then run CTest.
+
+### `ModuleNotFoundError: No module named 'aiterm_engine'`
+
+This means the native module was not built, was built for a different Python,
+or is not under `engine\build\Release`. Check:
+
+```powershell
+Get-ChildItem engine\build\Release\aiterm_engine*.pyd
+python -c "import sys; print(sys.executable); print(sys.version)"
+```
+
+If no `.pyd` is listed, the native build did not succeed. If its `cp3XX` tag
+does not match the runtime Python, delete `engine\build` and rebuild from the
+same activated `.venv`.
+
+### CMake finds Python 3.14 but pybind11 under `Python312`
+
+That is a mixed global/user installation. Do not continue with that build.
+Activate `.venv`, install pybind11 through `python -m pip`, verify
+`pybind11.__file__` is inside `.venv`, delete `engine\build`, and configure
+again while passing `-DPython_EXECUTABLE="$pythonExe"`.
+
+### Other common issues
+
+- `cmake` cannot find pybind11: run `python -m pip show pybind11` and verify it
+  uses the same activated interpreter as `python -c "import sys; print(sys.executable)"`.
+- `flutter doctor` shows a red X next to Visual Studio: re-run Visual Studio
+  Installer, enable **Desktop development with C++**, and restart PowerShell.
+- A `.pyd` has the wrong Python tag: delete `engine\build` and rebuild with the
+  same `.venv` used to start FastAPI.

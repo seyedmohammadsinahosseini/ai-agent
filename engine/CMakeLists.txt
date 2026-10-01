@@ -4,6 +4,12 @@ project(aiterm_engine LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if (WIN32)
+    # Prevent Windows SDK min/max macros from corrupting standard-library calls
+    # in pybind11 or engine headers, regardless of include order.
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
 set(PYBIND11_FINDPYTHON ON)
 find_package(Python COMPONENTS Interpreter Development REQUIRED)
 find_package(pybind11 REQUIRED)

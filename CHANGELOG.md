@@ -60,6 +60,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 - Unbounded synchronous output capture and live UI output accumulation.
 - Context scratch files accumulating after normal use.
 - Placeholder Flutter project metadata in desktop and web builds.
+- MSVC C2589 build failure caused by the Windows SDK `min` macro colliding with `std::min`.
 
 ### Security
 

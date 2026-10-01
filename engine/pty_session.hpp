@@ -17,7 +17,6 @@
 // platform it's running on.
 
 #include <string>
-#include <algorithm>
 #include <functional>
 #include <stdexcept>
 #include <cstring>
@@ -27,6 +26,11 @@
 #include <memory>
 
 #if defined(_WIN32)
+    // windows.h defines min/max macros unless NOMINMAX is set. Those macros
+    // break standard calls such as std::min(...) under MSVC (C2589).
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
     // ==================== Windows (ConPTY) ====================
     #include <windows.h>
     #include <vector>
@@ -54,7 +58,10 @@ inline void appendBoundedOutput(std::string& target, const char* data, size_t si
                                 bool& truncation_noted) {
     if (target.size() < MAX_CAPTURED_OUTPUT_BYTES) {
         size_t remaining = MAX_CAPTURED_OUTPUT_BYTES - target.size();
-        target.append(data, std::min(size, remaining));
+        // Avoid std::min here as an additional defense against translation
+        // units that included windows.h without NOMINMAX before this header.
+        size_t append_size = size < remaining ? size : remaining;
+        target.append(data, append_size);
         if (size > remaining && !truncation_noted) {
             target += "\n[output truncated]\n";
             truncation_noted = true;

@@ -1,6 +1,18 @@
 #include <iostream>
 #include <string>
+#include <functional>
+#include <stdexcept>
+#include <cstring>
+#include <thread>
+#include <mutex>
+#include <unordered_map>
+#include <memory>
+
+// Simulate the function-like min macro exposed by windows.h after standard
+// headers were already included. Engine code must not invoke that macro.
+#define min(a, b) windows_min_macro_must_not_expand_here
 #include "../pty_session.hpp"
+#undef min
 
 int main() {
 #if defined(_WIN32)
