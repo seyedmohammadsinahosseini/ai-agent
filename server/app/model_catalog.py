@@ -20,7 +20,7 @@ _CATALOG: list[ModelInfo] = [
               description="Fast, general-purpose workhorse model."),
     ModelInfo(id="claude-opus-5", label="Claude Opus 5", provider="anthropic",
               description="Strongest Anthropic model for hard agentic tasks."),
-    ModelInfo(id="claude-haiku-4-5", label="Claude Haiku 4.5", provider="anthropic",
+    ModelInfo(id="claude-haiku-4-5-20251001", label="Claude Haiku 4.5", provider="anthropic",
               description="Fast and economical for lightweight tasks."),
 
     # Gemini

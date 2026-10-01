@@ -12,8 +12,9 @@ system prompt to make this reliable.
 import json
 import httpx
 from typing import Optional
-from .models import ChatMessage
+from .models import ChatMessage, ModelInfo
 from .config import load_provider_api_key, get_custom_provider, load_custom_provider_api_key
+from . import model_catalog
 
 PLAN_MODE_PROMPT = """You are an AI assistant embedded in a Windows terminal app, currently in
 PLAN MODE. In this mode you have READ-ONLY access: you may look at files and discuss what you
@@ -141,7 +142,17 @@ async def suggest_command(messages: list[ChatMessage], provider: str, model: Opt
         raise ProviderError(f"Unknown provider: {provider}")
 
 
-def _parse_model_json(text: str) -> dict:
+def _parse_model_json(text) -> dict:
+    if not isinstance(text, str) or not text.strip():
+        return {
+            "reply_text": (
+                "The model responded, but didn't return any readable text (it may have "
+                "returned an empty or tool/function-call-only response). Try rephrasing "
+                "your request, or try again."
+            ),
+            "command": None,
+            "explanation": None,
+        }
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
@@ -151,6 +162,34 @@ def _parse_model_json(text: str) -> dict:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         return {"reply_text": text, "command": None, "explanation": None}
+
+
+
+def _extract_chat_message_content(data: dict, provider_label: str) -> Optional[str]:
+    """Pulls the text content out of an OpenAI-shaped chat-completions
+    response, returning None (instead of crashing) if the model didn't
+    return plain text - e.g. because it made a tool/function call instead,
+    refused to answer, or was cut off by a content filter."""
+    try:
+        choice = data["choices"][0]
+        message = choice.get("message", {}) or {}
+    except (KeyError, IndexError, TypeError):
+        return None
+    content = message.get("content")
+    if content:
+        return content
+    if message.get("refusal"):
+        return f"{provider_label} declined to answer: {message['refusal']}"
+    if message.get("tool_calls"):
+        return (
+            f"{provider_label} tried to call a tool/function instead of replying with text, "
+            f"which this app doesn't support yet. Try rephrasing your request as a direct "
+            f"question or instruction."
+        )
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "content_filter":
+        return f"{provider_label} blocked this response due to its content filter."
+    return None
 
 
 async def _call_openai(messages: list[ChatMessage], api_key: str, model: str, system_prompt: str) -> dict:
@@ -171,7 +210,7 @@ async def _call_openai(messages: list[ChatMessage], api_key: str, model: str, sy
     if resp.status_code != 200:
         raise ProviderError(_http_error_message("OpenAI", resp.status_code, resp.text))
     data = resp.json()
-    content = data["choices"][0]["message"]["content"]
+    content = _extract_chat_message_content(data, "OpenAI")
     return _parse_model_json(content)
 
 
@@ -195,7 +234,14 @@ async def _call_anthropic(messages: list[ChatMessage], api_key: str, model: str,
     if resp.status_code != 200:
         raise ProviderError(_http_error_message("Anthropic", resp.status_code, resp.text))
     data = resp.json()
-    content = data["content"][0]["text"]
+    content = None
+    blocks = data.get("content") or []
+    for block in blocks:
+        if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+            content = block["text"]
+            break
+    if content is None and data.get("stop_reason") == "refusal":
+        content = "Anthropic declined to answer this request."
     return _parse_model_json(content)
 
 
@@ -230,14 +276,120 @@ async def _call_openai_compatible(messages: list[ChatMessage], api_key: str, mod
         raise ProviderError(_http_error_message(provider_label, resp.status_code, resp.text))
     try:
         data = resp.json()
-        content = data["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError):
+    except ValueError:
         raise ProviderError(
             f"{provider_label} responded, but not in the format we expected from an "
             f"OpenAI-compatible API. It may not actually support the chat completions "
             f"endpoint at this base URL."
         )
+    if "choices" not in data:
+        raise ProviderError(
+            f"{provider_label} responded, but not in the format we expected from an "
+            f"OpenAI-compatible API. It may not actually support the chat completions "
+            f"endpoint at this base URL."
+        )
+    content = _extract_chat_message_content(data, provider_label)
     return _parse_model_json(content)
+
+
+async def discover_openai_models(api_key: str) -> list[str]:
+    """Live list of models this OpenAI key can actually access, instead of a
+    hardcoded guess that can silently go stale as OpenAI retires/renames
+    models. Falls back to an empty list (caller should fall back to the
+    static catalog) on any failure."""
+    url = "https://api.openai.com/v1/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+    except Exception:
+        return []
+    ids = [item.get("id") for item in data.get("data", []) if isinstance(item, dict) and item.get("id")]
+    # Keep chat-capable text models; drop embeddings/audio/image/moderation/
+    # legacy-completion models that would never be useful here and that a
+    # chat-completions call against would just 400/404 anyway.
+    excluded_markers = (
+        "embedding", "whisper", "tts", "dall-e", "moderation", "davinci",
+        "babbage", "ada", "curie", "audio", "image", "realtime",
+        "transcribe", "search", "computer-use", "sora",
+    )
+    chat_ids = [i for i in ids if not any(m in i for m in excluded_markers)]
+    return sorted(chat_ids, reverse=True)
+
+
+async def discover_anthropic_models(api_key: str) -> list[str]:
+    """Live list of models this Anthropic key can access (Anthropic has
+    supported GET /v1/models for this since 2024)."""
+    url = "https://api.anthropic.com/v1/models"
+    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+    except Exception:
+        return []
+    ids = [item.get("id") for item in data.get("data", []) if isinstance(item, dict) and item.get("id")]
+    return sorted(ids, reverse=True)
+
+
+async def discover_gemini_models(api_key: str) -> list[str]:
+    """Live list of Gemini models this key can access that support
+    generateContent (i.e. are usable for chat), instead of a hardcoded
+    model id that can go stale as Google retires/renames models."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+    except Exception:
+        return []
+    out = []
+    for m in data.get("models", []):
+        name = m.get("name", "")
+        methods = m.get("supportedGenerationMethods", [])
+        if "generateContent" in methods and name.startswith("models/"):
+            out.append(name[len("models/"):])
+    return sorted(out, reverse=True)
+
+
+_DISCOVER_FN = {
+    "openai": discover_openai_models,
+    "anthropic": discover_anthropic_models,
+    "gemini": discover_gemini_models,
+}
+
+
+async def live_models_for_builtin_provider(provider: str, api_key: str) -> list[ModelInfo]:
+    """Returns the models this specific API key can actually use for
+    `provider`, discovered live from the provider's own API. Falls back to
+    our best-guess static catalog only if live discovery fails (e.g. no
+    internet right now) so the picker never ends up completely empty.
+
+    This is what prevents "model not found" (HTTP 404) errors caused by a
+    hardcoded model id that has since been renamed/retired by the provider,
+    or that this particular account/tier doesn't have access to.
+    """
+    discover_fn = _DISCOVER_FN.get(provider)
+    live_ids = await discover_fn(api_key) if discover_fn else []
+    if not live_ids:
+        return model_catalog.models_for_provider(provider)
+
+    static_by_id = {m.id: m for m in model_catalog.models_for_provider(provider)}
+    out = []
+    for model_id in live_ids:
+        if model_id in static_by_id:
+            out.append(static_by_id[model_id])
+        else:
+            out.append(ModelInfo(id=model_id, label=model_id, provider=provider,
+                                  description="Detected from your API key"))
+    return out
 
 
 async def discover_models(base_url: str, api_key: str) -> list[str]:
@@ -278,5 +430,17 @@ async def _call_gemini(messages: list[ChatMessage], api_key: str, model: str, sy
     if resp.status_code != 200:
         raise ProviderError(_http_error_message("Gemini", resp.status_code, resp.text))
     data = resp.json()
-    content = data["candidates"][0]["content"]["parts"][0]["text"]
+    content = None
+    candidates = data.get("candidates") or []
+    if candidates:
+        candidate = candidates[0]
+        parts = (candidate.get("content") or {}).get("parts") or []
+        for part in parts:
+            if isinstance(part, dict) and part.get("text"):
+                content = part["text"]
+                break
+        if content is None and candidate.get("finishReason") == "SAFETY":
+            content = "Gemini blocked this response due to its safety filter."
+    if content is None and data.get("promptFeedback", {}).get("blockReason"):
+        content = f"Gemini blocked this request: {data['promptFeedback']['blockReason']}."
     return _parse_model_json(content)
