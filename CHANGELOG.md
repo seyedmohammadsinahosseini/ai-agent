@@ -61,6 +61,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 - Context scratch files accumulating after normal use.
 - Placeholder Flutter project metadata in desktop and web builds.
 - MSVC C2589 build failure caused by the Windows SDK `min` macro colliding with `std::min`.
+- Windows ConPTY output bypassing the engine when a parent such as CTest redirected its standard handles.
+- Loss of trailing ConPTY output when conhost flushed shortly after the PowerShell process exited.
+- Native-module startup failures now retain the original Python loader exception while reporting interpreter, ABI suffix, search-path, and discovered-artifact diagnostics.
 
 ### Security
 

@@ -6,21 +6,64 @@ In the final Windows build, this native module ships alongside the main
 executable. Here we add the build directory to sys.path so the import works
 during development.
 """
-import sys
+import importlib.machinery
 import itertools
+import sys
 from pathlib import Path
 
 _ENGINE_BUILD_DIR = Path(__file__).resolve().parents[2] / "engine" / "build"
-if str(_ENGINE_BUILD_DIR) not in sys.path:
-    sys.path.insert(0, str(_ENGINE_BUILD_DIR))
-# Windows CMake/MSVC builds typically place the .pyd under a config subfolder
-# (e.g. build/Release/aiterm_engine.pyd) rather than directly in build/.
-for _sub in ("Release", "RelWithDebInfo", "Debug"):
-    _p = _ENGINE_BUILD_DIR / _sub
-    if _p.exists() and str(_p) not in sys.path:
-        sys.path.insert(0, str(_p))
+_ENGINE_SEARCH_DIRS = [_ENGINE_BUILD_DIR] + [
+    _ENGINE_BUILD_DIR / sub for sub in ("Release", "RelWithDebInfo", "Debug")
+]
+for _path in _ENGINE_SEARCH_DIRS:
+    if _path.exists() and str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
-import aiterm_engine as native  # noqa: E402
+_ENGINE_CANDIDATES = sorted(
+    str(path)
+    for directory in _ENGINE_SEARCH_DIRS if directory.exists()
+    for path in directory.glob("aiterm_engine*")
+    if path.is_file() and path.suffix.lower() in {".pyd", ".so", ".dylib"}
+)
+_ENGINE_SUFFIXES = ", ".join(importlib.machinery.EXTENSION_SUFFIXES)
+_ENGINE_CANDIDATE_TEXT = (
+    "\n  - ".join(_ENGINE_CANDIDATES) if _ENGINE_CANDIDATES else "(none found)"
+)
+_ENGINE_SEARCHED_TEXT = "\n  - ".join(str(path) for path in _ENGINE_SEARCH_DIRS)
+
+try:
+    import aiterm_engine as native  # noqa: E402
+except ModuleNotFoundError as exc:
+    # Preserve the original exception (including its missing-module name) and
+    # attach actionable context instead of replacing a loader/dependency error.
+    if exc.name != "aiterm_engine":
+        exc.add_note(
+            "aiterm_engine was located, but importing it required another missing module. "
+            f"Active Python: {sys.executable} ({sys.version.split()[0]})."
+        )
+        raise
+
+    exc.add_note(
+        "No native aiterm_engine module compatible with the active Python was found.\n"
+        f"Python: {sys.executable}\n"
+        f"Version: {sys.version.split()[0]}\n"
+        f"Recognized extension suffixes: {_ENGINE_SUFFIXES}\n"
+        f"Searched:\n  - {_ENGINE_SEARCHED_TEXT}\n"
+        f"Built candidates:\n  - {_ENGINE_CANDIDATE_TEXT}\n"
+        "Activate the same virtual environment used for CMake, delete engine/build, "
+        "and rebuild with -DPython_EXECUTABLE set to that environment's python.exe."
+    )
+    raise
+except ImportError as exc:
+    exc.add_note(
+        "aiterm_engine was found but could not be loaded.\n"
+        f"Python: {sys.executable}\n"
+        f"Version: {sys.version.split()[0]}\n"
+        f"Recognized extension suffixes: {_ENGINE_SUFFIXES}\n"
+        f"Built candidates:\n  - {_ENGINE_CANDIDATE_TEXT}\n"
+        "Rebuild the Release target with this exact Python and ensure its runtime DLL is available."
+    )
+    raise
 
 _classifier = native.RiskClassifier()
 _execution_id_counter = itertools.count(1)

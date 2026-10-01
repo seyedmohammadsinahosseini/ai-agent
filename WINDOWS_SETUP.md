@@ -215,19 +215,72 @@ This is normally a consequence of the preceding C++ build failure. CTest does
 not build missing executables. Fix the first compiler error, run
 `cmake --build ... --config Release` successfully, and only then run CTest.
 
+### `pty_session_test` prints `pty-ok` but reports empty captured output
+
+Pull the latest source and clean-rebuild. Older revisions allowed PowerShell to
+inherit CTest's redirected standard output handle, bypassing ConPTY even though
+the command exited successfully. The launcher now explicitly leaves the child
+standard handles null so ConPTY creates them, then gives conhost a bounded
+post-exit interval to flush trailing output.
+
+```powershell
+git pull
+if (Test-Path engine\build) { Remove-Item -Recurse -Force engine\build }
+```
+
+Then repeat section 3 with `.venv` active.
+
 ### `ModuleNotFoundError: No module named 'aiterm_engine'`
 
 This means the native module was not built, was built for a different Python,
-or is not under `engine\build\Release`. Check:
+or is not under `engine\build\Release`. Run these diagnostics from the
+repository root in the same PowerShell window used to start the server:
 
 ```powershell
-Get-ChildItem engine\build\Release\aiterm_engine*.pyd
 python -c "import sys; print(sys.executable); print(sys.version)"
+python -c "import importlib.machinery; print(importlib.machinery.EXTENSION_SUFFIXES)"
+Get-ChildItem engine\build\Release\aiterm_engine*.pyd
+
+# Test the built module directly, independently of FastAPI.
+$releaseDir = (Resolve-Path engine\build\Release).Path
+python -c "import sys; sys.path.insert(0, sys.argv[1]); import aiterm_engine; print(aiterm_engine.__file__)" $releaseDir
 ```
 
 If no `.pyd` is listed, the native build did not succeed. If its `cp3XX` tag
-does not match the runtime Python, delete `engine\build` and rebuild from the
-same activated `.venv`.
+does not match the runtime Python, or the direct import fails, perform this
+clean rebuild using one activated environment:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+
+python -m pip install --upgrade pip
+python -m pip install -r server\requirements.txt pybind11 cmake
+
+$pythonExe = (Get-Command python).Source
+$pybind11Dir = python -c "import pybind11; print(pybind11.get_cmake_dir())"
+python -c "import sys; print(sys.executable); print(sys.version)"
+
+if (Test-Path engine\build) { Remove-Item -Recurse -Force engine\build }
+cmake -S engine -B engine\build `
+  -DPython_EXECUTABLE="$pythonExe" `
+  -Dpybind11_DIR="$pybind11Dir" `
+  -DBUILD_TESTING=ON
+cmake --build engine\build --config Release
+ctest --test-dir engine\build -C Release --output-on-failure
+
+$releaseDir = (Resolve-Path engine\build\Release).Path
+python -c "import sys; sys.path.insert(0, sys.argv[1]); import aiterm_engine; print(aiterm_engine.__file__)" $releaseDir
+
+Push-Location server
+python -m app.main
+Pop-Location
+```
+
+Do not configure CMake with one Python and launch FastAPI with another.
+`engine_bridge.py` now preserves the original Python import/loader exception
+and appends the active interpreter, recognized ABI suffixes, searched build
+directories, and any native candidates it found.
 
 ### CMake finds Python 3.14 but pybind11 under `Python312`
 

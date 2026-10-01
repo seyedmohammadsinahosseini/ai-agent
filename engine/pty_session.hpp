@@ -150,6 +150,16 @@ inline std::shared_ptr<PtyProcess> launch(const std::string& command, const std:
     // Build the STARTUPINFOEX with the pseudo console attribute.
     STARTUPINFOEXW siEx{};
     siEx.StartupInfo.cb = sizeof(STARTUPINFOEXW);
+    // When the parent process has redirected stdout/stderr (CTest does this),
+    // Windows may duplicate those redirected handles into the child even with
+    // bInheritHandles=FALSE. That bypasses ConPTY and leaves our output pipe
+    // empty. Explicitly supplying null standard handles prevents that legacy
+    // duplication; the pseudoconsole then creates its own standard streams.
+    // See microsoft/terminal discussion #15814.
+    siEx.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+    siEx.StartupInfo.hStdInput = nullptr;
+    siEx.StartupInfo.hStdOutput = nullptr;
+    siEx.StartupInfo.hStdError = nullptr;
 
     SIZE_T attrListSize = 0;
     InitializeProcThreadAttributeList(nullptr, 1, 0, &attrListSize);
@@ -257,6 +267,7 @@ public:
         char readBuf[4096];
         DWORD bytesRead = 0;
         DWORD startTick = GetTickCount();
+        DWORD processExitTick = 0;
 
         while (true) {
             DWORD avail = 0;
@@ -269,9 +280,12 @@ public:
             } else {
                 DWORD waitResult = WaitForSingleObject(proc->hProcess, 20);
                 if (waitResult == WAIT_OBJECT_0) {
-                    // Drain any remaining buffered output before exiting.
-                    if (PeekNamedPipe(proc->hPipeOut, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) continue;
-                    break;
+                    // ConPTY/conhost may flush bytes shortly after the client
+                    // process exits. Give it a bounded grace period instead of
+                    // racing an immediate zero-byte PeekNamedPipe result.
+                    if (processExitTick == 0) processExitTick = GetTickCount();
+                    if (GetTickCount() - processExitTick >= 500) break;
+                    Sleep(10);
                 }
             }
             if ((GetTickCount() - startTick) / 1000 > (DWORD)timeout_seconds) {
@@ -315,6 +329,7 @@ public:
             char readBuf[4096];
             DWORD bytesRead = 0;
             DWORD startTick = GetTickCount();
+            DWORD processExitTick = 0;
 
             while (true) {
                 DWORD avail = 0;
@@ -325,8 +340,9 @@ public:
                 } else {
                     DWORD waitResult = WaitForSingleObject(proc->hProcess, 20);
                     if (waitResult == WAIT_OBJECT_0) {
-                        if (PeekNamedPipe(proc->hPipeOut, nullptr, 0, nullptr, &avail, nullptr) && avail > 0) continue;
-                        break;
+                        if (processExitTick == 0) processExitTick = GetTickCount();
+                        if (GetTickCount() - processExitTick >= 500) break;
+                        Sleep(10);
                     }
                 }
                 if (proc->killed.load()) {
