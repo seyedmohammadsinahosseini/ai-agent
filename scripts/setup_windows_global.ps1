@@ -43,21 +43,34 @@ try {
     }
 
     $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-    $vsInstall = $null
+    $vsInstances = @()
     if (Test-Path $vswhere) {
-        $vsInstall = & $vswhere -latest -products * `
+        $vsJson = & $vswhere -latest -products * `
             -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
-            -property installationPath
+            -format json
+        if ($LASTEXITCODE -eq 0 -and $vsJson) {
+            $vsInstances = @(($vsJson -join [Environment]::NewLine) | ConvertFrom-Json)
+        }
     }
-    if (-not $vsInstall) {
+    if ($vsInstances.Count -eq 0) {
         throw @"
-Visual Studio 2022 with Desktop development with C++ was not found.
-Install it, close PowerShell, and rerun this script. One supported command is:
-
-winget install --exact --id Microsoft.VisualStudio.2022.Community --override "--wait --passive --add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended"
+No complete Visual Studio C++ toolchain was found. In Visual Studio Installer,
+select Modify and enable 'Desktop development with C++', then rerun this script.
+A green 'Windows Version' line in flutter doctor is separate from the
+'Visual Studio - develop Windows apps' check.
 "@
     }
-    Write-Host "Visual Studio: $vsInstall" -ForegroundColor Green
+
+    $vsInstance = $vsInstances[0]
+    $vsMajor = [int](($vsInstance.installationVersion -split "\.")[0])
+    $cmakeGenerator = switch ($vsMajor) {
+        18 { "Visual Studio 18 2026"; break }
+        17 { "Visual Studio 17 2022"; break }
+        16 { "Visual Studio 16 2019"; break }
+        default { throw "Unsupported Visual Studio version: $($vsInstance.installationVersion)" }
+    }
+    Write-Host "Visual Studio: $($vsInstance.installationPath)" -ForegroundColor Green
+    Write-Host "CMake generator: $cmakeGenerator" -ForegroundColor Green
 
     if (Test-Path ".venv") {
         Write-Host "Removing unused .venv directory..." -ForegroundColor Yellow
@@ -86,7 +99,7 @@ winget install --exact --id Microsoft.VisualStudio.2022.Community --override "--
 
     Invoke-Checked "Configure native engine" {
         cmake -S engine -B engine\build `
-            -G "Visual Studio 17 2022" `
+            -G $cmakeGenerator `
             -A x64 `
             "-DPython_EXECUTABLE=$pythonExe" `
             "-DPython_ROOT_DIR=$pythonRoot" `

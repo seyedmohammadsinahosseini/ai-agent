@@ -90,7 +90,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 - Added consolidated architectural decision records.
 - Updated Windows setup instructions for direct PowerShell execution and private token handling.
 - Replaced the virtual-environment setup path with an explicit global Python 3.12 workflow for dependency installation, native compilation, diagnostics, and runtime.
-- Added a fail-fast Windows setup script that checks the Visual Studio C++ workload before configuring or building.
+- Added a fail-fast Windows setup script that checks the Visual Studio C++ workload, detects Visual Studio 2022 versus 2026, selects the matching CMake generator, and stops before cascading build errors.
 
 ## Release history
 

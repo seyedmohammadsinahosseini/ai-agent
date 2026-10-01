@@ -108,8 +108,8 @@ ai-terminal/
 ### Windows production/development target
 
 - Windows 10 version 1809 or newer for ConPTY.
-- Visual Studio 2022 with **Desktop development with C++**.
-- CMake 3.15 or newer.
+- Visual Studio 2022 or 2026 with **Desktop development with C++**; use a Flutter release that recognizes the installed version.
+- CMake 4.2 or newer when using Visual Studio 2026 (3.15+ remains sufficient for Visual Studio 2022).
 - Python 3.12 x64 is recommended for the documented Windows build.
 - Flutter SDK with Windows desktop support enabled.
 
@@ -166,13 +166,17 @@ pass the exact Python 3.12 executable and pybind11 CMake directory explicitly:
 $pythonExe = py -3.12 -c "import sys; print(sys.executable)"
 $pythonRoot = Split-Path $pythonExe
 $pybind11Dir = py -3.12 -c "import pybind11; print(pybind11.get_cmake_dir())"
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vsVersion = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+$vsMajor = [int](($vsVersion -split '\.')[0])
+$cmakeGenerator = if ($vsMajor -eq 18) { "Visual Studio 18 2026" } elseif ($vsMajor -eq 17) { "Visual Studio 17 2022" } else { throw "Unsupported or incomplete Visual Studio installation" }
 
 if (Test-Path engine\build) {
     Remove-Item -Recurse -Force engine\build
 }
 
 cmake -S engine -B engine\build `
-  -G "Visual Studio 17 2022" `
+  -G $cmakeGenerator `
   -A x64 `
   -DPython_EXECUTABLE="$pythonExe" `
   -DPython_ROOT_DIR="$pythonRoot" `

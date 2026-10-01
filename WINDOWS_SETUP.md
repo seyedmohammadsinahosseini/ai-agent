@@ -20,17 +20,24 @@ personal access token directly in the clone URL or commit it to a file.
 
 You'll need four things. Install them in this order:
 
-### 1.1 Visual Studio Build Tools (for compiling the C++ engine)
+### 1.1 Visual Studio with C++ tools
 The C++ engine needs a real Windows C++ compiler (MSVC), not MinGW/g++,
 because it uses Win32/ConPTY headers.
 
-1. Download **Visual Studio 2022 Community** (free): https://visualstudio.microsoft.com/downloads/
-2. In the installer, select the **"Desktop development with C++"** workload.
-   This also installs CMake integration, but we'll use a standalone CMake too.
+1. Install **Visual Studio Community 2022 or 2026** from
+   https://visualstudio.microsoft.com/downloads/.
+2. In Visual Studio Installer, select the **"Desktop development with C++"**
+   workload. A green `Windows Version` line in `flutter doctor` does not by
+   itself prove this separate Visual Studio workload is installed.
+
+The setup script detects the installed Visual Studio major version and chooses
+the matching CMake generator automatically.
 
 ### 1.2 CMake
 Download and install from https://cmake.org/download/ (Windows x64 Installer).
-During install, choose **"Add CMake to the system PATH"**.
+During install, choose **"Add CMake to the system PATH"**. Visual Studio 2026
+requires CMake 4.2 or newer; Visual Studio 2022 works with older supported CMake
+versions.
 
 ### 1.3 Python 3.12 x64
 Download the 64-bit Python 3.12 installer from
@@ -103,6 +110,10 @@ Run these commands from the repository root:
 $pythonExe = py -3.12 -c "import sys; print(sys.executable)"
 $pythonRoot = Split-Path $pythonExe
 $pybind11Dir = py -3.12 -c "import pybind11; print(pybind11.get_cmake_dir())"
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vsVersion = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+$vsMajor = [int](($vsVersion -split '\.')[0])
+$cmakeGenerator = if ($vsMajor -eq 18) { "Visual Studio 18 2026" } elseif ($vsMajor -eq 17) { "Visual Studio 17 2022" } else { throw "Unsupported or incomplete Visual Studio installation" }
 
 # Always remove a build directory previously configured with another Python,
 # generator, architecture, or source revision.
@@ -111,7 +122,7 @@ if (Test-Path engine\build) {
 }
 
 cmake -S engine -B engine\build `
-  -G "Visual Studio 17 2022" `
+  -G $cmakeGenerator `
   -A x64 `
   -DPython_EXECUTABLE="$pythonExe" `
   -DPython_ROOT_DIR="$pythonRoot" `
@@ -276,11 +287,15 @@ py -3.12 -m pip install --user -r server\requirements.txt pybind11
 $pythonExe = py -3.12 -c "import sys; print(sys.executable)"
 $pythonRoot = Split-Path $pythonExe
 $pybind11Dir = py -3.12 -c "import pybind11; print(pybind11.get_cmake_dir())"
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vsVersion = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion
+$vsMajor = [int](($vsVersion -split '\.')[0])
+$cmakeGenerator = if ($vsMajor -eq 18) { "Visual Studio 18 2026" } elseif ($vsMajor -eq 17) { "Visual Studio 17 2022" } else { throw "Unsupported or incomplete Visual Studio installation" }
 py -3.12 -c "import sys; print(sys.executable); print(sys.version)"
 
 if (Test-Path engine\build) { Remove-Item -Recurse -Force engine\build }
 cmake -S engine -B engine\build `
-  -G "Visual Studio 17 2022" `
+  -G $cmakeGenerator `
   -A x64 `
   -DPython_EXECUTABLE="$pythonExe" `
   -DPython_ROOT_DIR="$pythonRoot" `
