@@ -43,7 +43,11 @@ class StoredUpload:
 
 
 def sanitize_filename(filename: str) -> str:
-    name = _SAFE_NAME_RE.sub("_", Path(filename).name) or "file"
+    # Treat both slash styles as path separators on every host. Otherwise a
+    # Windows traversal-style name is handled differently by pathlib on POSIX,
+    # making sanitization and its tests platform-dependent.
+    basename = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    name = _SAFE_NAME_RE.sub("_", basename) or "file"
     name = name.rstrip(". ") or "file"
     windows_reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
                         *(f"LPT{i}" for i in range(1, 10))}

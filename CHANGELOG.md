@@ -64,6 +64,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 - Windows ConPTY output bypassing the engine when a parent such as CTest redirected its standard handles.
 - Loss of trailing ConPTY output when conhost flushed shortly after the PowerShell process exited.
 - Native-module startup failures now retain the original Python loader exception while reporting interpreter, ABI suffix, search-path, and discovered-artifact diagnostics.
+- WebSocket tickets with a zero or boundary-time TTL being accepted on clocks with coarse resolution.
+- Upload filename sanitization producing different results for backslash traversal names on Windows and POSIX.
+- Native-independent policy unit tests importing the compiled engine before installing their test double.
+- Windows integration tests overlooking native modules in Visual Studio configuration subdirectories.
 
 ### Security
 
@@ -86,6 +90,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 - Added consolidated architectural decision records.
 - Updated Windows setup instructions for direct PowerShell execution and private token handling.
 - Replaced the virtual-environment setup path with an explicit global Python 3.12 workflow for dependency installation, native compilation, diagnostics, and runtime.
+- Added a fail-fast Windows setup script that checks the Visual Studio C++ workload before configuring or building.
 
 ## Release history
 

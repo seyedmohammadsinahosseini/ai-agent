@@ -1,6 +1,9 @@
 import importlib
+import sys
 import types
 from pathlib import Path
+
+import app as app_package
 
 
 class _Classification:
@@ -13,9 +16,13 @@ def _service_with_level(monkeypatch, level: str):
     fake = types.ModuleType("app.engine_bridge")
     fake.classify_command = lambda _command: _Classification(level)
     fake.risk_level_name = lambda value: value
-    service = importlib.import_module("app.execution_service")
-    monkeypatch.setattr(service, "engine_bridge", fake)
-    return service
+
+    # Install the fake before importing execution_service. Unit policy tests
+    # must not require the separately compiled native extension to exist.
+    monkeypatch.setitem(sys.modules, "app.engine_bridge", fake)
+    monkeypatch.setattr(app_package, "engine_bridge", fake, raising=False)
+    monkeypatch.delitem(sys.modules, "app.execution_service", raising=False)
+    return importlib.import_module("app.execution_service")
 
 
 def test_plan_mode_blocks_write_before_native_classifier(tmp_path: Path, monkeypatch):

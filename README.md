@@ -129,6 +129,17 @@ package installation, native compilation, and backend startup. The examples
 use 64-bit Python 3.12 through the Windows Python Launcher. Do not mix
 unversioned `python`/`pip` commands from another installation into these steps.
 
+For the safest automated setup, open PowerShell in the repository root and run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_windows_global.ps1
+```
+
+The script verifies Visual Studio's C++ workload before deleting or building
+anything, stops after the first failed step, installs packages into the Python
+3.12 user site, clean-builds the native module, and runs the test suites. The
+manual equivalent follows.
+
 ### 1. Install the Python packages globally for Python 3.12
 
 Open PowerShell in the repository root:

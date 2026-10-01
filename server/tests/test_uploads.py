@@ -5,7 +5,7 @@ from app import uploads
 
 def test_filename_sanitization_blocks_traversal_devices_and_long_names():
     assert uploads.sanitize_filename("../../evil.txt") == "evil.txt"
-    assert uploads.sanitize_filename(r"..\evil.txt") == ".._evil.txt"
+    assert uploads.sanitize_filename(r"..\evil.txt") == "evil.txt"
     assert uploads.sanitize_filename("..") not in (".", "..")
     assert uploads.sanitize_filename("CON.txt").startswith("_")
     assert len(uploads.sanitize_filename("a" * 300 + ".txt")) <= 180

@@ -83,9 +83,9 @@ class WebSocketTicketStore:
         with self._lock:
             self._purge_locked(now)
             entry = self._tickets.pop(ticket, None)
-            return entry is not None and entry.expires_at >= now
+            return entry is not None and entry.expires_at > now
 
     def _purge_locked(self, now: float):
-        expired = [key for key, item in self._tickets.items() if item.expires_at < now]
+        expired = [key for key, item in self._tickets.items() if item.expires_at <= now]
         for key in expired:
             self._tickets.pop(key, None)

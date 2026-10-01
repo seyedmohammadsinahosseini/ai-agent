@@ -54,6 +54,20 @@ explicitly, so no virtual environment or activation step is required.
    flutter config --enable-windows-desktop
    ```
 
+## Automated setup (recommended)
+
+After all prerequisites are installed, open PowerShell in the repository root
+and run this single command:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_windows_global.ps1
+```
+
+The script uses global Python 3.12 user-site packages, not a virtual
+environment. It verifies the Visual Studio C++ toolchain first and terminates
+the script after the first failure, preventing misleading follow-on errors
+such as missing tests or a missing `.pyd` after CMake configuration failed.
+
 ## 2. Use one global Python installation for build and runtime
 
 This project does not require a virtual environment. Open **PowerShell** in the

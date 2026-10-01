@@ -6,7 +6,15 @@ import pytest
 pytest.importorskip("fastapi")
 
 ROOT = Path(__file__).resolve().parents[2]
-if not list((ROOT / "engine" / "build").glob("aiterm_engine*")):
+ENGINE_BUILD = ROOT / "engine" / "build"
+ENGINE_SEARCH_DIRS = [
+    ENGINE_BUILD,
+    ENGINE_BUILD / "Release",
+    ENGINE_BUILD / "RelWithDebInfo",
+    ENGINE_BUILD / "Debug",
+]
+if not any(directory.exists() and any(directory.glob("aiterm_engine*"))
+           for directory in ENGINE_SEARCH_DIRS):
     pytest.skip("native engine has not been built", allow_module_level=True)
 
 from fastapi.testclient import TestClient
