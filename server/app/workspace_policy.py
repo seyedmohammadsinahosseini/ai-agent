@@ -70,7 +70,8 @@ def _posix_references_outside(command: str, working_dir: str) -> bool:
 
 
 def check_command_scope(command: str, working_dir: str | None,
-                        require_writable: bool = False) -> WorkspaceCheck:
+                        require_writable: bool = False,
+                        allow_multiline: bool = False) -> WorkspaceCheck:
     base = _normalize(working_dir, require_writable=require_writable)
     if not base.allowed:
         return base
@@ -79,9 +80,16 @@ def check_command_scope(command: str, working_dir: str | None,
     if not text:
         return WorkspaceCheck(False, base.normalized_working_dir, "An empty command cannot be executed.")
 
-    if "\x00" in text or "\r" in text or "\n" in text:
+    # NUL can never be part of a legitimate process command. Multi-line
+    # PowerShell scripts are useful for atomic multi-file work (for example,
+    # scaffolding a small website), but only Build mode opts into them. Plan
+    # mode remains restricted to one explicitly read-only command.
+    if "\x00" in text:
         return WorkspaceCheck(False, base.normalized_working_dir,
-                              "Multi-line or NUL-containing commands are not allowed.")
+                              "Commands containing NUL bytes are not allowed.")
+    if ("\r" in text or "\n" in text) and not allow_multiline:
+        return WorkspaceCheck(False, base.normalized_working_dir,
+                              "Multi-line commands are allowed only in Build mode.")
     if _PARENT_SEGMENT.search(text):
         return WorkspaceCheck(False, base.normalized_working_dir,
                               "The command uses '..' to leave the selected working folder.")

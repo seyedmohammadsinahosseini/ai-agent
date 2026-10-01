@@ -32,6 +32,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 ### Changed
 
 - Windows execution now launches non-interactive PowerShell directly instead of nesting commands in `cmd.exe /C`.
+- Build mode now accepts a scope-checked multi-line PowerShell script as one risk-classified, user-confirmed action, enabling coordinated multi-file tasks.
+- The desktop composer keeps the newest pending action visible beside the input until it is confirmed or completed.
 - Only explicitly recognized read-only commands may auto-run.
 - Build mode requires a valid writable working directory.
 - Confirmed execution uses the workspace captured when the command was proposed.
@@ -68,6 +70,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 - Upload filename sanitization producing different results for backslash traversal names on Windows and POSIX.
 - Native-independent policy unit tests importing the compiled engine before installing their test double.
 - Windows integration tests overlooking native modules in Visual Studio configuration subdirectories.
+- Pending confirmation controls disappearing after chat reloads or rejected execution attempts.
+- Long generated commands making confirmation dialogs overflow or hide their actions.
+- Enter not reliably submitting messages from the expandable desktop composer.
 
 ### Security
 

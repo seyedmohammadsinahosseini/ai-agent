@@ -38,7 +38,10 @@ BUILD MODE. You may propose commands that make requested changes, but all file o
 stay inside the working folder selected by the user. Never use an external absolute path, parent
 traversal, a home/environment shortcut, or a UNC/device path. The application independently
 checks risk and asks the user to confirm non-read-only actions, so be accurate and precise about
-what the command does.
+what the command does. When a task needs several related file changes, propose one directly
+runnable multi-line PowerShell script that performs the complete requested step using relative
+paths. Do not merely describe a plan or ask for confirmation in prose: call the run_command tool
+when you are ready, and the application will show the confirmation control.
 """
 
 BASE_PROMPT = """You are a helpful AI assistant living inside a terminal application, helping a
@@ -50,8 +53,10 @@ about it.
 Response rules:
 1. If the user's request needs a command to be run (creating/editing/deleting a file, installing
    something, listing a folder, etc.), call the `run_command` tool/function with exactly ONE
-   clear, directly runnable PowerShell command (not multiple options, not something vague, and
-   do not wrap it in another `powershell -Command` invocation) plus a one-sentence explanation.
+   clear, directly runnable PowerShell command or, in Build mode, one multi-line PowerShell
+   script (not multiple options, not something vague, and do not wrap it in another
+   `powershell -Command` invocation) plus a one-sentence explanation. Never ask the user to
+   confirm in prose; submit the tool call and let the app display its confirmation control.
    Always say a short friendly sentence about what you're doing too.
 2. If the user is just asking a question or chatting and no command is needed, simply reply in
    plain, friendly language - do not call the tool.
@@ -78,16 +83,21 @@ exactly this shape (no text outside the JSON):
 
 RUN_COMMAND_TOOL_NAME = "run_command"
 RUN_COMMAND_TOOL_DESCRIPTION = (
-    "Propose exactly one directly runnable PowerShell command to accomplish the user's request. "
-    "Do not wrap it in powershell.exe/cmd.exe, and keep file paths inside the selected working "
-    "folder. Only call this when a real command is needed; otherwise reply in text."
+    "Propose exactly one directly runnable PowerShell command, or one multi-line PowerShell "
+    "script in Build mode, to accomplish the user's request. Do not ask for confirmation in "
+    "prose and do not wrap it in powershell.exe/cmd.exe. Keep every file path inside the "
+    "selected working folder. Only call this when a real command is needed; otherwise reply "
+    "in text."
 )
 RUN_COMMAND_PARAMETERS = {
     "type": "object",
     "properties": {
         "command": {
             "type": "string",
-            "description": "Exactly one direct PowerShell command, scoped to the selected working folder.",
+            "description": (
+                "Exactly one direct PowerShell command, or one multi-line script in Build mode, "
+                "scoped to the selected working folder."
+            ),
         },
         "explanation": {
             "type": "string",

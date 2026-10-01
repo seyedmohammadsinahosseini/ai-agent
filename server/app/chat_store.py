@@ -23,7 +23,7 @@ DB_PATH = APP_DIR / "chats.db"
 # the same way it looked live) are kept in one JSON blob rather than one
 # column per field, so adding new fields later doesn't need a migration.
 _EXTRA_FIELDS = (
-    "mode", "suggested_command", "risk_level", "risk_human_reason",
+    "mode", "working_dir", "suggested_command", "risk_level", "risk_human_reason",
     "auto_executed", "execution_output", "execution_exit_code",
     "execution_was_stopped", "blocked_reason",
 )

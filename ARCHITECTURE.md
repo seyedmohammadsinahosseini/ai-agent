@@ -249,7 +249,8 @@ A client cannot substitute a different command while reusing a valid assistant-m
 - require an existing readable working directory;
 - require write access in Build mode;
 - normalize the real directory;
-- reject empty, NUL-containing, or multiline commands;
+- reject empty commands and NUL bytes in every mode;
+- permit multi-line PowerShell scripts only in Build mode (the full script is still scope-checked, risk-classified, and confirmed as one unit);
 - reject parent traversal;
 - reject UNC/device paths;
 - reject common home/environment path indirection;
@@ -260,7 +261,7 @@ A client cannot substitute a different command while reusing a valid assistant-m
 Plan mode accepts only one complete command on a conservative read-only allowlist. It rejects:
 
 - redirection;
-- pipes and chaining;
+- pipes, chaining, and multi-line input;
 - command substitution;
 - nested expressions/script blocks;
 - environment/home expansion;

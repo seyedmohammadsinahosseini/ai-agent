@@ -155,6 +155,7 @@ class ChatHistoryMessage(BaseModel):
     created_at: str
     is_error: bool = False
     mode: Optional[AgentMode] = None
+    working_dir: Optional[str] = None
     suggested_command: Optional[SuggestedCommand] = None
     risk_level: Optional[str] = None
     risk_human_reason: Optional[str] = None

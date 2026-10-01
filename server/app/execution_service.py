@@ -32,7 +32,10 @@ def authorize(command: str, mode: str, user_confirmed: bool,
     # explicitly reference common path escapes. This is still not an OS-level
     # sandbox; see workspace_policy.py and the UI/docs wording.
     scope = workspace_policy.check_command_scope(
-        command, working_dir, require_writable=(mode == "build")
+        command,
+        working_dir,
+        require_writable=(mode == "build"),
+        allow_multiline=(mode == "build"),
     )
     if not scope.allowed:
         return AuthorizationResult(

@@ -8,6 +8,7 @@ def test_streamed_execution_output_is_merged_into_assistant_turn():
             chat["id"], "assistant", "Running it",
             extra={
                 "risk_level": "CONFIRM",
+                "working_dir": "C:/workspace",
                 "suggested_command": {"command": "tool", "explanation": "test"},
             },
         )
@@ -23,5 +24,6 @@ def test_streamed_execution_output_is_merged_into_assistant_turn():
         assert saved["execution_exit_code"] == 0
         assert saved["execution_was_stopped"] is False
         assert saved["risk_level"] == "CONFIRM"
+        assert saved["working_dir"] == "C:/workspace"
     finally:
         chat_store.delete_chat(chat["id"])

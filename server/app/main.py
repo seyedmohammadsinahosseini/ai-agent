@@ -341,6 +341,7 @@ async def chat(req: ChatRequest):
         chat_id, "assistant", reply_text,
         extra={
             "mode": req.mode,
+            "working_dir": req.working_dir if response.suggested_command else None,
             "suggested_command": response.suggested_command.model_dump() if response.suggested_command else None,
             "risk_level": response.risk_level,
             "risk_human_reason": response.risk_human_reason,

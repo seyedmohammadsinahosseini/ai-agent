@@ -56,12 +56,16 @@ class ChatMessageItem {
       text: m.content,
       mode: m.mode,
       historyMessageId: m.id,
+      workingDir: m.workingDir,
       suggestedCommand: m.suggestedCommand,
       riskLevel: risk,
       riskReason: m.riskHumanReason,
       output: m.executionOutput,
       exitCode: m.executionExitCode,
-      pendingConfirmation: false,
+      pendingConfirmation: m.suggestedCommand != null &&
+          m.workingDir != null &&
+          m.executionExitCode == null &&
+          (risk == RiskLevel.confirm || risk == RiskLevel.dangerous),
       blocked: risk == RiskLevel.blocked ||
           risk == RiskLevel.blockedByMode ||
           risk == RiskLevel.blockedByWorkspace,

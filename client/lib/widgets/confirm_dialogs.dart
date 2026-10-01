@@ -16,19 +16,27 @@ Future<bool?> showSimpleConfirmDialog(BuildContext context, {required String com
           Text('Confirm this action'),
         ],
       ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(reason, style: const TextStyle(fontSize: 13.5)),
-          const SizedBox(height: 12),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(8)),
-            child: SelectableText(command, style: monoStyle(fontSize: 12.5)),
-          ),
-        ],
+      content: SizedBox(
+        width: 560,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(reason, style: const TextStyle(fontSize: 13.5)),
+            const SizedBox(height: 12),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 280),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(8)),
+                child: SingleChildScrollView(
+                  child: SelectableText(command, style: monoStyle(fontSize: 12.5)),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
@@ -70,11 +78,16 @@ Future<String?> showDangerousConfirmDialog(BuildContext context, {required Strin
               children: [
                 Text(reason, style: const TextStyle(fontSize: 13.5)),
                 const SizedBox(height: 12),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(8)),
-                  child: SelectableText(command, style: monoStyle(fontSize: 12.5)),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 220),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(8)),
+                    child: SingleChildScrollView(
+                      child: SelectableText(command, style: monoStyle(fontSize: 12.5)),
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 const Text('To confirm, type the phrase below exactly:',

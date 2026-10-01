@@ -516,6 +516,9 @@ class _ChatScreenState extends State<ChatScreen> {
           _isExecuting = false;
           msg?.isStreaming = false;
           msg?.output = data['message'];
+          if (msg?.riskLevel == RiskLevel.confirm || msg?.riskLevel == RiskLevel.dangerous) {
+            msg?.pendingConfirmation = true;
+          }
         });
         _activeExecutionMessage = null;
         break;
@@ -586,6 +589,15 @@ class _ChatScreenState extends State<ChatScreen> {
         SnackBar(content: Text(_cleanErrorMessage(e)), backgroundColor: AppColors.blocked),
       );
     }
+  }
+
+  ChatMessageItem? _latestPendingConfirmation() {
+    for (final message in _messages.reversed) {
+      if (message.pendingConfirmation && message.suggestedCommand != null) {
+        return message;
+      }
+    }
+    return null;
   }
 
   Future<void> _onStopPressed() async {
@@ -941,6 +953,7 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Widget _buildComposer() {
+    final pendingConfirmation = _latestPendingConfirmation();
     return Container(
       padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
       decoration: const BoxDecoration(
@@ -950,6 +963,61 @@ class _ChatScreenState extends State<ChatScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (pendingConfirmation != null) ...[
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: riskColor(pendingConfirmation.riskLevel ?? RiskLevel.confirm)
+                    .withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: riskColor(pendingConfirmation.riskLevel ?? RiskLevel.confirm)
+                      .withValues(alpha: 0.45),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.pending_actions_rounded,
+                    size: 18,
+                    color: riskColor(pendingConfirmation.riskLevel ?? RiskLevel.confirm),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'A command is waiting for your approval',
+                          style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          pendingConfirmation.suggestedCommand!.command.replaceAll(RegExp(r'[\r\n]+'), ' '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11, color: AppColors.textMuted),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton.icon(
+                    onPressed: _isExecuting ? null : () => _confirmAndRun(pendingConfirmation),
+                    icon: const Icon(Icons.play_arrow_rounded, size: 16),
+                    label: const Text('Review & confirm'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: riskColor(
+                        pendingConfirmation.riskLevel ?? RiskLevel.confirm,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           Row(
             children: [
               WorkdirButton(workingDir: _workingDir, onTap: _openFolderPicker),
@@ -1014,6 +1082,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: TextField(
                     controller: _inputController,
                     maxLines: null,
+                    textInputAction: TextInputAction.send,
                     decoration: InputDecoration(
                       hintText: _mode == AgentMode.plan
                           ? 'Ask a question or explore your files (read-only)...'

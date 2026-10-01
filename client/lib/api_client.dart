@@ -150,6 +150,7 @@ class ChatHistoryMessage {
   final String createdAt;
   final bool isError;
   final String? mode;
+  final String? workingDir;
   final SuggestedCommand? suggestedCommand;
   final String? riskLevel;
   final String? riskHumanReason;
@@ -166,6 +167,7 @@ class ChatHistoryMessage {
     required this.createdAt,
     this.isError = false,
     this.mode,
+    this.workingDir,
     this.suggestedCommand,
     this.riskLevel,
     this.riskHumanReason,
@@ -183,6 +185,7 @@ class ChatHistoryMessage {
         createdAt: j['created_at'] ?? '',
         isError: j['is_error'] ?? false,
         mode: j['mode'],
+        workingDir: j['working_dir'],
         suggestedCommand:
             j['suggested_command'] != null ? SuggestedCommand.fromJson(j['suggested_command']) : null,
         riskLevel: j['risk_level'],

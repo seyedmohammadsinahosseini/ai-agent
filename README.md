@@ -70,7 +70,7 @@ For the complete design, data flows, API surface, and trust boundaries, see [ARC
 Execution authorization is repeated immediately before every command:
 
 1. Validate and normalize the selected working directory.
-2. Block common workspace escapes such as `..`, external absolute paths, UNC/device paths, environment/home shortcuts, and multiline commands.
+2. Block common workspace escapes such as `..`, external absolute paths, UNC/device paths, and environment/home shortcuts; reject NUL bytes in every mode and permit multi-line scripts only in Build mode.
 3. Enforce Plan-mode read-only policy when Plan mode is active.
 4. Classify the command in the native deterministic risk engine.
 5. Require the appropriate user confirmation.

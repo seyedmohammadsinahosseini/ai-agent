@@ -54,6 +54,18 @@ def test_unknown_command_requires_confirmation(tmp_path: Path, monkeypatch):
     assert confirmed.normalized_working_dir == str(tmp_path.resolve())
 
 
+def test_build_mode_allows_confirmed_multiline_script(tmp_path: Path, monkeypatch):
+    service = _service_with_level(monkeypatch, "CONFIRM")
+    script = "Set-Content index.html '<h1>Hello</h1>'\nSet-Content app.js 'ready'"
+
+    waiting = service.authorize(script, "build", False, None, str(tmp_path))
+    assert not waiting.allowed
+    assert waiting.risk_level == "CONFIRM"
+
+    confirmed = service.authorize(script, "build", True, None, str(tmp_path))
+    assert confirmed.allowed
+
+
 def test_dangerous_command_requires_exact_phrase(tmp_path: Path, monkeypatch):
     service = _service_with_level(monkeypatch, "DANGEROUS")
     wrong = service.authorize("danger-tool", "build", True, "yes", str(tmp_path))
