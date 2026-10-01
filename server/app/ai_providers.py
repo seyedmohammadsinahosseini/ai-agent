@@ -1,13 +1,21 @@
 """
-Shared adapter layer for multiple AI providers (BYOK: OpenAI / Anthropic / Gemini).
+Shared adapter layer for multiple AI providers (BYOK: OpenAI / Anthropic / Gemini,
+plus any custom OpenAI-compatible provider).
 
 Goal: upstream code (main.py) doesn't need to know which service is being used;
 it only talks to `suggest_command`. This makes it easy to swap providers or add
 a local model (Ollama) later.
 
-Expected model output: a natural reply + (optionally) one suggested PowerShell
-command + a plain-language explanation. We ask for structured JSON in the
-system prompt to make this reliable.
+How command suggestions work: this is the actual "agent" part of the app - the
+whole point is that the user can ask for something in plain language and the
+AI can propose a real command to do it (create/edit/delete a file, install
+something, etc.). We get this from the model using each provider's native
+function/tool-calling feature (a single `run_command` tool), which is far more
+reliable than asking the model to hand-write JSON inside a text reply - it's
+also what modern "agentic" models are specifically trained to use, and some of
+them will use it by default regardless of what the prompt says. As a
+compatibility fallback (older models, or providers that don't support tool
+calling), we still try to parse a JSON object out of a plain-text reply.
 """
 import json
 import httpx
@@ -36,20 +44,64 @@ and precise about what the command does.
 
 BASE_PROMPT = """You are a helpful AI assistant living inside a terminal application, helping a
 non-technical user get things done on their Windows computer by running PowerShell commands.
+This is the core feature of this app - the user relies on you to actually create, edit, run, and
+delete files and otherwise operate their computer through plain-language requests, not just talk
+about it.
 
 Response rules:
-1. Always explain what you're doing in simple, friendly language.
-2. If you need to run a PowerShell/cmd command, propose exactly ONE clear, directly runnable
-   command (not multiple options, not something vague).
-3. Always respond with JSON in exactly this shape (no text outside the JSON):
+1. If the user's request needs a command to be run (creating/editing/deleting a file, installing
+   something, listing a folder, etc.), call the `run_command` tool/function with exactly ONE
+   clear, directly runnable PowerShell/cmd command (not multiple options, not something vague)
+   and a one-sentence plain-language explanation of exactly what it does to the user's files or
+   system. Always say a short friendly sentence about what you're doing too.
+2. If the user is just asking a question or chatting and no command is needed, simply reply in
+   plain, friendly language - do not call the tool.
+3. Never propose a command the user didn't effectively ask for (e.g. broad deletions, security
+   setting changes) unless it was clearly requested.
+"""
+
+# Fallback instruction appended only when we have to retry a request without
+# tool-calling support (see _call_openai_compatible) - keeps the old
+# JSON-in-text contract alive for providers that can't do real tool calls.
+LEGACY_JSON_FALLBACK_PROMPT = """
+This API does not support tool/function calling, so instead: always respond with JSON in
+exactly this shape (no text outside the JSON):
 {
   "reply_text": "friendly explanation for the user",
   "command": "the PowerShell command to run, or null if no command is needed",
   "explanation": "one simple sentence describing exactly what this command does to the user's files/system"
 }
-4. Never propose a command the user didn't effectively ask for (e.g. broad deletions, security
-   setting changes) unless it was clearly requested.
 """
+
+RUN_COMMAND_TOOL_NAME = "run_command"
+RUN_COMMAND_TOOL_DESCRIPTION = (
+    "Propose exactly one PowerShell/cmd command to run on the user's Windows machine to "
+    "accomplish what they asked for (creating, editing, running, or deleting files; installing "
+    "things; inspecting the system; etc). Only call this when a real command is needed - for "
+    "questions or plain conversation, just reply in text instead."
+)
+RUN_COMMAND_PARAMETERS = {
+    "type": "object",
+    "properties": {
+        "command": {
+            "type": "string",
+            "description": "The exact PowerShell/cmd command to run. Exactly one command, directly runnable.",
+        },
+        "explanation": {
+            "type": "string",
+            "description": (
+                "One simple, plain-language sentence describing exactly what this command "
+                "does to the user's files/system."
+            ),
+        },
+    },
+    "required": ["command", "explanation"],
+}
+
+_NO_READABLE_TEXT_MESSAGE = (
+    "The model responded, but didn't return any readable text or a usable command. Try "
+    "rephrasing your request, or try again."
+)
 
 
 class ProviderError(Exception):
@@ -99,11 +151,14 @@ def _network_error_message(provider_label: str, base_url: Optional[str] = None) 
     )
 
 
-def _build_system_prompt(mode: str, working_dir: Optional[str]) -> str:
+def _build_system_prompt(mode: str, working_dir: Optional[str], legacy_json: bool = False) -> str:
     mode_prompt = BUILD_MODE_PROMPT if mode == "build" else PLAN_MODE_PROMPT
     context = f"\nThe user's selected working folder is: {working_dir}\n" if working_dir else \
               "\nNo working folder has been selected yet by the user.\n"
-    return BASE_PROMPT + "\n" + mode_prompt + context
+    prompt = BASE_PROMPT + "\n" + mode_prompt + context
+    if legacy_json:
+        prompt += "\n" + LEGACY_JSON_FALLBACK_PROMPT
+    return prompt
 
 
 async def suggest_command(messages: list[ChatMessage], provider: str, model: Optional[str],
@@ -125,7 +180,7 @@ async def suggest_command(messages: list[ChatMessage], provider: str, model: Opt
                 f"No model configured for custom provider '{cfg['label']}'. "
                 "Add one when connecting the provider in Settings."
             )
-        return await _call_openai_compatible(messages, api_key, chosen_model, system_prompt,
+        return await _call_openai_compatible(messages, api_key, chosen_model, mode, working_dir,
                                               cfg["base_url"], provider_label=cfg["label"])
 
     api_key = load_provider_api_key(provider)
@@ -143,53 +198,89 @@ async def suggest_command(messages: list[ChatMessage], provider: str, model: Opt
 
 
 def _parse_model_json(text) -> dict:
+    """Fallback for plain-text replies (no tool call happened): tries to
+    pull a {reply_text, command, explanation} object out of the text (the
+    old contract), degrading gracefully to a plain conversational reply if
+    the model didn't return valid JSON - which is expected and fine when
+    the user was just chatting rather than asking for a command."""
     if not isinstance(text, str) or not text.strip():
-        return {
-            "reply_text": (
-                "The model responded, but didn't return any readable text (it may have "
-                "returned an empty or tool/function-call-only response). Try rephrasing "
-                "your request, or try again."
-            ),
-            "command": None,
-            "explanation": None,
-        }
+        return {"reply_text": _NO_READABLE_TEXT_MESSAGE, "command": None, "explanation": None}
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:]
     try:
-        return json.loads(cleaned)
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict) and ("reply_text" in parsed or "command" in parsed):
+            return {
+                "reply_text": parsed.get("reply_text") or "",
+                "command": parsed.get("command"),
+                "explanation": parsed.get("explanation"),
+            }
+        return {"reply_text": text, "command": None, "explanation": None}
     except json.JSONDecodeError:
         return {"reply_text": text, "command": None, "explanation": None}
 
 
+# ---------------------------------------------------------------------------
+# OpenAI / OpenAI-compatible (tool-calling) response shape.
+# ---------------------------------------------------------------------------
+_OPENAI_TOOL_DEF = {
+    "type": "function",
+    "function": {
+        "name": RUN_COMMAND_TOOL_NAME,
+        "description": RUN_COMMAND_TOOL_DESCRIPTION,
+        "parameters": RUN_COMMAND_PARAMETERS,
+    },
+}
 
-def _extract_chat_message_content(data: dict, provider_label: str) -> Optional[str]:
-    """Pulls the text content out of an OpenAI-shaped chat-completions
-    response, returning None (instead of crashing) if the model didn't
-    return plain text - e.g. because it made a tool/function call instead,
-    refused to answer, or was cut off by a content filter."""
+
+def _parse_openai_style_message(data: dict, provider_label: str) -> dict:
     try:
         choice = data["choices"][0]
         message = choice.get("message", {}) or {}
     except (KeyError, IndexError, TypeError):
-        return None
-    content = message.get("content")
-    if content:
-        return content
-    if message.get("refusal"):
-        return f"{provider_label} declined to answer: {message['refusal']}"
-    if message.get("tool_calls"):
-        return (
-            f"{provider_label} tried to call a tool/function instead of replying with text, "
-            f"which this app doesn't support yet. Try rephrasing your request as a direct "
-            f"question or instruction."
+        raise ProviderError(
+            f"{provider_label} responded, but not in the format we expected from an "
+            f"OpenAI-compatible API."
         )
-    finish_reason = choice.get("finish_reason")
-    if finish_reason == "content_filter":
-        return f"{provider_label} blocked this response due to its content filter."
-    return None
+
+    content = message.get("content") or ""
+    for call in (message.get("tool_calls") or []):
+        fn = (call or {}).get("function", {}) or {}
+        if fn.get("name") != RUN_COMMAND_TOOL_NAME:
+            continue
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except json.JSONDecodeError:
+            args = {}
+        command = args.get("command")
+        if command:
+            explanation = args.get("explanation", "")
+            return {
+                "reply_text": content or f"Here's what I'll do: {explanation}".strip(),
+                "command": command,
+                "explanation": explanation,
+            }
+
+    if content:
+        return _parse_model_json(content)
+    if message.get("refusal"):
+        return {"reply_text": f"{provider_label} declined to answer: {message['refusal']}",
+                "command": None, "explanation": None}
+    if message.get("tool_calls"):
+        return {
+            "reply_text": (
+                f"{provider_label} tried to call a tool this app doesn't recognize. Try "
+                f"rephrasing your request."
+            ),
+            "command": None, "explanation": None,
+        }
+    if choice.get("finish_reason") == "content_filter":
+        return {"reply_text": f"{provider_label} blocked this response due to its content filter.",
+                "command": None, "explanation": None}
+    return {"reply_text": _NO_READABLE_TEXT_MESSAGE, "command": None, "explanation": None}
 
 
 async def _call_openai(messages: list[ChatMessage], api_key: str, model: str, system_prompt: str) -> dict:
@@ -198,7 +289,8 @@ async def _call_openai(messages: list[ChatMessage], api_key: str, model: str, sy
         "model": model,
         "messages": [{"role": "system", "content": system_prompt}] +
                     [{"role": m.role, "content": m.content} for m in messages],
-        "response_format": {"type": "json_object"},
+        "tools": [_OPENAI_TOOL_DEF],
+        "tool_choice": "auto",
         "temperature": 0.2,
     }
     headers = {"Authorization": f"Bearer {api_key}"}
@@ -209,9 +301,40 @@ async def _call_openai(messages: list[ChatMessage], api_key: str, model: str, sy
         raise ProviderError(_network_error_message("OpenAI"))
     if resp.status_code != 200:
         raise ProviderError(_http_error_message("OpenAI", resp.status_code, resp.text))
-    data = resp.json()
-    content = _extract_chat_message_content(data, "OpenAI")
-    return _parse_model_json(content)
+    return _parse_openai_style_message(resp.json(), "OpenAI")
+
+
+# ---------------------------------------------------------------------------
+# Anthropic (tool-use) response shape.
+# ---------------------------------------------------------------------------
+_ANTHROPIC_TOOL_DEF = {
+    "name": RUN_COMMAND_TOOL_NAME,
+    "description": RUN_COMMAND_TOOL_DESCRIPTION,
+    "input_schema": RUN_COMMAND_PARAMETERS,
+}
+
+
+def _parse_anthropic_message(data: dict) -> dict:
+    blocks = data.get("content") or []
+    text_parts = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use" and block.get("name") == RUN_COMMAND_TOOL_NAME:
+            args = block.get("input") or {}
+            command = args.get("command")
+            if command:
+                explanation = args.get("explanation", "")
+                reply = " ".join(text_parts).strip() or f"Here's what I'll do: {explanation}".strip()
+                return {"reply_text": reply, "command": command, "explanation": explanation}
+        elif block.get("type") == "text" and block.get("text"):
+            text_parts.append(block["text"])
+
+    if text_parts:
+        return _parse_model_json(" ".join(text_parts))
+    if data.get("stop_reason") == "refusal":
+        return {"reply_text": "Anthropic declined to answer this request.", "command": None, "explanation": None}
+    return {"reply_text": _NO_READABLE_TEXT_MESSAGE, "command": None, "explanation": None}
 
 
 async def _call_anthropic(messages: list[ChatMessage], api_key: str, model: str, system_prompt: str) -> dict:
@@ -221,6 +344,7 @@ async def _call_anthropic(messages: list[ChatMessage], api_key: str, model: str,
         "max_tokens": 1024,
         "system": system_prompt,
         "messages": [{"role": m.role if m.role != "system" else "user", "content": m.content} for m in messages],
+        "tools": [_ANTHROPIC_TOOL_DEF],
     }
     headers = {
         "x-api-key": api_key,
@@ -233,20 +357,115 @@ async def _call_anthropic(messages: list[ChatMessage], api_key: str, model: str,
         raise ProviderError(_network_error_message("Anthropic"))
     if resp.status_code != 200:
         raise ProviderError(_http_error_message("Anthropic", resp.status_code, resp.text))
-    data = resp.json()
-    content = None
-    blocks = data.get("content") or []
-    for block in blocks:
-        if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-            content = block["text"]
-            break
-    if content is None and data.get("stop_reason") == "refusal":
-        content = "Anthropic declined to answer this request."
-    return _parse_model_json(content)
+    return _parse_anthropic_message(resp.json())
+
+
+# ---------------------------------------------------------------------------
+# Gemini (function-calling) response shape.
+# ---------------------------------------------------------------------------
+_GEMINI_TOOL_DEF = {
+    "functionDeclarations": [{
+        "name": RUN_COMMAND_TOOL_NAME,
+        "description": RUN_COMMAND_TOOL_DESCRIPTION,
+        "parameters": RUN_COMMAND_PARAMETERS,
+    }]
+}
+
+
+def _parse_gemini_message(data: dict) -> dict:
+    candidates = data.get("candidates") or []
+    if not candidates:
+        block_reason = (data.get("promptFeedback") or {}).get("blockReason")
+        if block_reason:
+            return {"reply_text": f"Gemini blocked this request: {block_reason}.",
+                    "command": None, "explanation": None}
+        return {"reply_text": _NO_READABLE_TEXT_MESSAGE, "command": None, "explanation": None}
+
+    candidate = candidates[0]
+    parts = (candidate.get("content") or {}).get("parts") or []
+    text_parts = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        fc = part.get("functionCall")
+        if fc and fc.get("name") == RUN_COMMAND_TOOL_NAME:
+            args = fc.get("args") or {}
+            command = args.get("command")
+            if command:
+                explanation = args.get("explanation", "")
+                reply = " ".join(text_parts).strip() or f"Here's what I'll do: {explanation}".strip()
+                return {"reply_text": reply, "command": command, "explanation": explanation}
+        elif part.get("text"):
+            text_parts.append(part["text"])
+
+    if text_parts:
+        return _parse_model_json(" ".join(text_parts))
+    if candidate.get("finishReason") == "SAFETY":
+        return {"reply_text": "Gemini blocked this response due to its safety filter.",
+                "command": None, "explanation": None}
+    return {"reply_text": _NO_READABLE_TEXT_MESSAGE, "command": None, "explanation": None}
+
+
+async def _call_gemini(messages: list[ChatMessage], api_key: str, model: str, system_prompt: str) -> dict:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    contents = [{"role": "user" if m.role == "user" else "model", "parts": [{"text": m.content}]} for m in messages]
+    payload = {
+        "systemInstruction": {"parts": [{"text": system_prompt}]},
+        "contents": contents,
+        "tools": [_GEMINI_TOOL_DEF],
+        "generationConfig": {"temperature": 0.2},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=payload)
+    except httpx.RequestError:
+        raise ProviderError(_network_error_message("Gemini"))
+    if resp.status_code != 200:
+        raise ProviderError(_http_error_message("Gemini", resp.status_code, resp.text))
+    return _parse_gemini_message(resp.json())
+
+
+# ---------------------------------------------------------------------------
+# Custom OpenAI-compatible providers.
+# ---------------------------------------------------------------------------
+def _looks_like_unsupported_tools_error(status_code: int, raw_text: str) -> bool:
+    """Best-effort detection of a provider rejecting the request specifically
+    because it doesn't support the `tools`/function-calling parameter (some
+    older or minimal OpenAI-compatible APIs - certain local model servers,
+    older proxies, etc.). Used to trigger a one-time automatic retry using
+    the older JSON-in-text contract instead of just failing outright."""
+    if status_code not in (400, 422):
+        return False
+    lowered = raw_text.lower()
+    return ("tool" in lowered or "function" in lowered) and (
+        "not supported" in lowered or "unsupported" in lowered or "unknown parameter" in lowered
+        or "unrecognized" in lowered or "invalid" in lowered
+    )
+
+
+async def _post_openai_compatible(url: str, api_key: str, model: str, system_prompt: str,
+                                   messages: list[ChatMessage], provider_label: str,
+                                   base_url: str, with_tools: bool) -> httpx.Response:
+    payload = {
+        "model": model,
+        "messages": [{"role": "system", "content": system_prompt}] +
+                    [{"role": m.role, "content": m.content} for m in messages],
+        "temperature": 0.2,
+    }
+    if with_tools:
+        payload["tools"] = [_OPENAI_TOOL_DEF]
+        payload["tool_choice"] = "auto"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            return await client.post(url, json=payload, headers=headers)
+    except httpx.RequestError:
+        raise ProviderError(_network_error_message(provider_label, base_url))
 
 
 async def _call_openai_compatible(messages: list[ChatMessage], api_key: str, model: str,
-                                   system_prompt: str, base_url: str, provider_label: str = "This provider") -> dict:
+                                   mode: str, working_dir: Optional[str], base_url: str,
+                                   provider_label: str = "This provider") -> dict:
     """Calls any third-party provider that speaks the OpenAI chat-completions
     API shape (Groq, OpenRouter, Together, DeepSeek, Fireworks, local
     Ollama/LM Studio in OpenAI-compat mode, etc.). `base_url` is expected to
@@ -254,24 +473,23 @@ async def _call_openai_compatible(messages: list[ChatMessage], api_key: str, mod
     'https://openrouter.ai/api/v1'), matching the convention used by the
     official OpenAI SDKs' `base_url` parameter.
 
-    We deliberately don't force `response_format: json_object` here since
-    not all third-party providers support that field - `_parse_model_json`
-    already degrades gracefully to a plain-text reply if the model doesn't
-    return valid JSON.
+    Tries native tool/function calling first (like the built-in providers).
+    If the provider rejects the `tools` parameter outright (some minimal/
+    older OpenAI-compatible servers don't support it), automatically retries
+    once using the older "reply with JSON in text" contract instead, so
+    those providers still work rather than just failing.
     """
     url = f"{base_url.rstrip('/')}/chat/completions"
-    payload = {
-        "model": model,
-        "messages": [{"role": "system", "content": system_prompt}] +
-                    [{"role": m.role, "content": m.content} for m in messages],
-        "temperature": 0.2,
-    }
-    headers = {"Authorization": f"Bearer {api_key}"}
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-    except httpx.RequestError:
-        raise ProviderError(_network_error_message(provider_label, base_url))
+    system_prompt = _build_system_prompt(mode, working_dir)
+
+    resp = await _post_openai_compatible(url, api_key, model, system_prompt, messages,
+                                          provider_label, base_url, with_tools=True)
+
+    if resp.status_code != 200 and _looks_like_unsupported_tools_error(resp.status_code, resp.text):
+        legacy_prompt = _build_system_prompt(mode, working_dir, legacy_json=True)
+        resp = await _post_openai_compatible(url, api_key, model, legacy_prompt, messages,
+                                              provider_label, base_url, with_tools=False)
+
     if resp.status_code != 200:
         raise ProviderError(_http_error_message(provider_label, resp.status_code, resp.text))
     try:
@@ -288,10 +506,13 @@ async def _call_openai_compatible(messages: list[ChatMessage], api_key: str, mod
             f"OpenAI-compatible API. It may not actually support the chat completions "
             f"endpoint at this base URL."
         )
-    content = _extract_chat_message_content(data, provider_label)
-    return _parse_model_json(content)
+    return _parse_openai_style_message(data, provider_label)
 
 
+# ---------------------------------------------------------------------------
+# Live model discovery (so the model picker only shows models a given key can
+# actually use, instead of a hardcoded guess that can go stale).
+# ---------------------------------------------------------------------------
 async def discover_openai_models(api_key: str) -> list[str]:
     """Live list of models this OpenAI key can actually access, instead of a
     hardcoded guess that can silently go stale as OpenAI retires/renames
@@ -412,35 +633,3 @@ async def discover_models(base_url: str, api_key: str) -> list[str]:
             return sorted(ids)
     except Exception:
         return []
-
-
-async def _call_gemini(messages: list[ChatMessage], api_key: str, model: str, system_prompt: str) -> dict:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    contents = [{"role": "user" if m.role == "user" else "model", "parts": [{"text": m.content}]} for m in messages]
-    payload = {
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "contents": contents,
-        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
-    }
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, json=payload)
-    except httpx.RequestError:
-        raise ProviderError(_network_error_message("Gemini"))
-    if resp.status_code != 200:
-        raise ProviderError(_http_error_message("Gemini", resp.status_code, resp.text))
-    data = resp.json()
-    content = None
-    candidates = data.get("candidates") or []
-    if candidates:
-        candidate = candidates[0]
-        parts = (candidate.get("content") or {}).get("parts") or []
-        for part in parts:
-            if isinstance(part, dict) and part.get("text"):
-                content = part["text"]
-                break
-        if content is None and candidate.get("finishReason") == "SAFETY":
-            content = "Gemini blocked this response due to its safety filter."
-    if content is None and data.get("promptFeedback", {}).get("blockReason"):
-        content = f"Gemini blocked this request: {data['promptFeedback']['blockReason']}."
-    return _parse_model_json(content)
