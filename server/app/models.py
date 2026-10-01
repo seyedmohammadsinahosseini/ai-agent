@@ -29,6 +29,9 @@ class ChatRequest(BaseModel):
     mode: AgentMode = "plan"
     working_dir: Optional[str] = None
     attachment_ids: list[str] = Field(default_factory=list)
+    # Which saved conversation (sidebar history) this message belongs to. If
+    # omitted/null, the server starts a brand new chat and returns its id.
+    chat_id: Optional[str] = None
 
 
 class SuggestedCommand(BaseModel):
@@ -46,6 +49,11 @@ class ChatResponse(BaseModel):
     execution_output: Optional[str] = None
     execution_exit_code: Optional[int] = None
     blocked_reason: Optional[str] = None
+    # The chat (conversation) this exchange was saved under - always set, so
+    # the client can keep sending follow-up messages under the same history
+    # entry even if it started the conversation without one.
+    chat_id: str
+
 
 
 class ExecuteRequest(BaseModel):
@@ -130,3 +138,50 @@ class UploadResponse(BaseModel):
     size_bytes: int
     kind: Literal["context", "workspace"]
     saved_path: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Chat history (left sidebar: "New Chat" + past conversations).
+# ---------------------------------------------------------------------------
+class ChatHistoryMessage(BaseModel):
+    """A single stored message, with enough optional metadata to redraw an
+    assistant turn (suggested command, risk badge, etc.) the same way it
+    looked live when the conversation is reopened later."""
+    id: str
+    role: Literal["user", "assistant", "system"]
+    content: str
+    created_at: str
+    is_error: bool = False
+    mode: Optional[AgentMode] = None
+    suggested_command: Optional[SuggestedCommand] = None
+    risk_level: Optional[str] = None
+    risk_human_reason: Optional[str] = None
+    auto_executed: bool = False
+    execution_output: Optional[str] = None
+    execution_exit_code: Optional[int] = None
+    blocked_reason: Optional[str] = None
+
+
+class ChatSummary(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    message_count: int = 0
+
+
+class ChatListResponse(BaseModel):
+    chats: list[ChatSummary]
+
+
+class ChatDetail(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    messages: list[ChatHistoryMessage]
+
+
+class RenameChatRequest(BaseModel):
+    title: str
+

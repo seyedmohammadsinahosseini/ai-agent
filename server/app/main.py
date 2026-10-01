@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import (
     get_or_create_local_token, save_provider_api_key, list_configured_providers,
-    delete_provider_api_key,
+    delete_provider_api_key, load_provider_api_key,
     save_custom_provider, list_custom_providers, delete_custom_provider,
 )
 from .models import (
@@ -29,12 +29,14 @@ from .models import (
     CustomProviderCreate, CustomProviderInfo,
     BrowseFolderResponse, SelectWorkingDirRequest, SelectWorkingDirResponse,
     UploadResponse,
+    ChatSummary, ChatListResponse, ChatDetail, RenameChatRequest,
 )
 from . import engine_bridge
 from . import workspace
 from . import uploads
 from . import model_catalog
-from .ai_providers import suggest_command, discover_models, ProviderError
+from . import chat_store
+from .ai_providers import suggest_command, discover_models, live_models_for_builtin_provider, ProviderError
 from .execution_service import authorize
 
 app = FastAPI(title="AI Terminal Local API", version="0.2.0")
@@ -76,11 +78,28 @@ def get_local_token():
 # ------------------------------- Providers / models -------------------------------
 
 @app.get("/providers/status", response_model=ProviderStatus, dependencies=[Depends(verify_token)])
-def providers_status():
+async def providers_status():
     configured = list_configured_providers()
     custom = list_custom_providers()
-    models = model_catalog.models_for_configured_providers(configured) + \
-        model_catalog.models_for_custom_providers(custom)
+
+    # For each configured built-in provider, ask the provider itself which
+    # models this specific key can use right now, instead of trusting a
+    # hardcoded guess that can go stale as providers rename/retire models.
+    # If live discovery fails for a provider (e.g. no internet), we fall
+    # back to the static catalog for just that provider rather than
+    # failing the whole request.
+    live_results = await asyncio.gather(
+        *[live_models_for_builtin_provider(p, load_provider_api_key(p)) for p in configured],
+        return_exceptions=True,
+    )
+    models: list = []
+    for provider, result in zip(configured, live_results):
+        if isinstance(result, Exception):
+            models.extend(model_catalog.models_for_provider(provider))
+        else:
+            models.extend(result)
+    models += model_catalog.models_for_custom_providers(custom)
+
     return ProviderStatus(
         configured_providers=configured,
         available_models=models,
@@ -180,6 +199,18 @@ async def upload_file(
 async def chat(req: ChatRequest):
     messages = list(req.messages)
 
+    # Resolve which saved conversation (sidebar history entry) this message
+    # belongs to, creating a new one if this is the first message of a chat
+    # (or the chat_id the client sent no longer exists, e.g. it was deleted).
+    chat_id = req.chat_id if (req.chat_id and chat_store.chat_exists(req.chat_id)) else None
+    if not chat_id:
+        last_user_text = next((m.content for m in reversed(messages) if m.role == "user"), "")
+        chat_id = chat_store.create_chat(chat_store.auto_title_from_text(last_user_text))["id"]
+
+    last_user_message = messages[-1] if messages and messages[-1].role == "user" else None
+    if last_user_message:
+        chat_store.add_message(chat_id, "user", last_user_message.content)
+
     # Inline any "context" attachments' text content as an extra system-ish message
     attachment_texts = []
     for att_id in req.attachment_ids:
@@ -194,13 +225,26 @@ async def chat(req: ChatRequest):
     try:
         result = await suggest_command(messages, req.provider, req.model, req.mode, req.working_dir)
     except ProviderError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        chat_store.add_message(chat_id, "assistant", str(e), is_error=True, extra={"mode": req.mode})
+        raise HTTPException(status_code=400, detail={"message": str(e), "chat_id": chat_id})
+    except Exception:
+        # Safety net: never let an unexpected bug surface as a raw 500 with a
+        # Python traceback. Anything not already turned into a clear
+        # ProviderError above is still shown to the user as an actionable
+        # message instead of a crash.
+        err_text = (
+            "Something unexpected went wrong while talking to the AI provider. "
+            "This is likely a temporary issue - please try again. If it keeps "
+            "happening, try switching to a different model."
+        )
+        chat_store.add_message(chat_id, "assistant", err_text, is_error=True, extra={"mode": req.mode})
+        raise HTTPException(status_code=500, detail={"message": err_text, "chat_id": chat_id})
 
     reply_text = result.get("reply_text") or ""
     command = result.get("command")
     explanation = result.get("explanation") or ""
 
-    response = ChatResponse(reply_text=reply_text, mode=req.mode)
+    response = ChatResponse(reply_text=reply_text, mode=req.mode, chat_id=chat_id)
 
     if command:
         response.suggested_command = SuggestedCommand(command=command, explanation=explanation)
@@ -223,7 +267,58 @@ async def chat(req: ChatRequest):
         elif not auth.allowed and auth.risk_level == "BLOCKED":
             response.blocked_reason = auth.message
 
+    chat_store.add_message(
+        chat_id, "assistant", reply_text,
+        extra={
+            "mode": req.mode,
+            "suggested_command": response.suggested_command.model_dump() if response.suggested_command else None,
+            "risk_level": response.risk_level,
+            "risk_human_reason": response.risk_human_reason,
+            "auto_executed": response.auto_executed or None,
+            "execution_output": response.execution_output,
+            "execution_exit_code": response.execution_exit_code,
+            "blocked_reason": response.blocked_reason,
+        },
+    )
+
     return response
+
+
+# ---------------------------------------------------------------------------
+# Chat history (left sidebar).
+# ---------------------------------------------------------------------------
+@app.get("/chats", response_model=ChatListResponse, dependencies=[Depends(verify_token)])
+def get_chats():
+    return ChatListResponse(chats=[ChatSummary(**c) for c in chat_store.list_chats()])
+
+
+@app.post("/chats", response_model=ChatSummary, dependencies=[Depends(verify_token)])
+def create_new_chat():
+    return ChatSummary(**chat_store.create_chat())
+
+
+@app.get("/chats/{chat_id}", response_model=ChatDetail, dependencies=[Depends(verify_token)])
+def get_chat_detail(chat_id: str):
+    detail = chat_store.get_chat(chat_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="This chat no longer exists.")
+    return ChatDetail(**detail)
+
+
+@app.patch("/chats/{chat_id}", response_model=ChatSummary, dependencies=[Depends(verify_token)])
+def rename_chat_endpoint(chat_id: str, req: RenameChatRequest):
+    if not chat_store.chat_exists(chat_id):
+        raise HTTPException(status_code=404, detail="This chat no longer exists.")
+    chat_store.rename_chat(chat_id, req.title)
+    detail = chat_store.get_chat(chat_id)
+    return ChatSummary(id=detail["id"], title=detail["title"], created_at=detail["created_at"],
+                        updated_at=detail["updated_at"], message_count=len(detail["messages"]))
+
+
+@app.delete("/chats/{chat_id}", dependencies=[Depends(verify_token)])
+def delete_chat_endpoint(chat_id: str):
+    chat_store.delete_chat(chat_id)
+    return {"ok": True}
 
 
 # ------------------------------- Execute (REST, one-shot) -------------------------------

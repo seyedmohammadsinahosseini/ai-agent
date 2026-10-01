@@ -80,6 +80,7 @@ class ChatResult {
   final String? executionOutput;
   final int? executionExitCode;
   final String? blockedReason;
+  final String chatId;
 
   ChatResult({
     required this.replyText,
@@ -91,6 +92,7 @@ class ChatResult {
     this.executionOutput,
     this.executionExitCode,
     this.blockedReason,
+    required this.chatId,
   });
 
   factory ChatResult.fromJson(Map<String, dynamic> j) => ChatResult(
@@ -105,6 +107,98 @@ class ChatResult {
         executionOutput: j['execution_output'],
         executionExitCode: j['execution_exit_code'],
         blockedReason: j['blocked_reason'],
+        chatId: j['chat_id'] ?? '',
+      );
+}
+
+/// A row in the left sidebar's chat history list.
+class ChatSummary {
+  final String id;
+  final String title;
+  final String createdAt;
+  final String updatedAt;
+  final int messageCount;
+
+  ChatSummary({
+    required this.id,
+    required this.title,
+    required this.createdAt,
+    required this.updatedAt,
+    required this.messageCount,
+  });
+
+  factory ChatSummary.fromJson(Map<String, dynamic> j) => ChatSummary(
+        id: j['id'],
+        title: j['title'] ?? 'New chat',
+        createdAt: j['created_at'] ?? '',
+        updatedAt: j['updated_at'] ?? '',
+        messageCount: j['message_count'] ?? 0,
+      );
+}
+
+/// One message as stored/replayed from a past conversation, with enough
+/// metadata to redraw an assistant turn (suggested command, risk badge,
+/// output) the same way it looked live.
+class ChatHistoryMessage {
+  final String id;
+  final String role;
+  final String content;
+  final String createdAt;
+  final bool isError;
+  final String? mode;
+  final SuggestedCommand? suggestedCommand;
+  final String? riskLevel;
+  final String? riskHumanReason;
+  final bool autoExecuted;
+  final String? executionOutput;
+  final int? executionExitCode;
+  final String? blockedReason;
+
+  ChatHistoryMessage({
+    required this.id,
+    required this.role,
+    required this.content,
+    required this.createdAt,
+    this.isError = false,
+    this.mode,
+    this.suggestedCommand,
+    this.riskLevel,
+    this.riskHumanReason,
+    this.autoExecuted = false,
+    this.executionOutput,
+    this.executionExitCode,
+    this.blockedReason,
+  });
+
+  factory ChatHistoryMessage.fromJson(Map<String, dynamic> j) => ChatHistoryMessage(
+        id: j['id'],
+        role: j['role'],
+        content: j['content'] ?? '',
+        createdAt: j['created_at'] ?? '',
+        isError: j['is_error'] ?? false,
+        mode: j['mode'],
+        suggestedCommand:
+            j['suggested_command'] != null ? SuggestedCommand.fromJson(j['suggested_command']) : null,
+        riskLevel: j['risk_level'],
+        riskHumanReason: j['risk_human_reason'],
+        autoExecuted: j['auto_executed'] ?? false,
+        executionOutput: j['execution_output'],
+        executionExitCode: j['execution_exit_code'],
+        blockedReason: j['blocked_reason'],
+      );
+}
+
+class ChatDetail {
+  final String id;
+  final String title;
+  final List<ChatHistoryMessage> messages;
+
+  ChatDetail({required this.id, required this.title, required this.messages});
+
+  factory ChatDetail.fromJson(Map<String, dynamic> j) => ChatDetail(
+        id: j['id'],
+        title: j['title'] ?? 'New chat',
+        messages: (j['messages'] as List? ?? []).map((m) => ChatHistoryMessage.fromJson(m)).toList(),
       );
 }
 
@@ -171,6 +265,18 @@ class UploadResult {
         sizeBytes: j['size_bytes'],
         kind: j['kind'],
       );
+}
+
+/// Thrown by [ApiClient.chat] on a failed request. Carries [chatId] when the
+/// server managed to create/find the conversation before the failure, so the
+/// UI can still track it (e.g. a bad API key on the very first message of a
+/// new chat) instead of losing it.
+class ChatApiException implements Exception {
+  final String message;
+  final String? chatId;
+  ChatApiException(this.message, {this.chatId});
+  @override
+  String toString() => message;
 }
 
 class ApiClient {
@@ -281,6 +387,7 @@ class ApiClient {
     required String mode,
     String? workingDir,
     List<String> attachmentIds = const [],
+    String? chatId,
   }) async {
     await ensureToken();
     final resp = await http.post(
@@ -293,13 +400,54 @@ class ApiClient {
         'mode': mode,
         'working_dir': workingDir,
         'attachment_ids': attachmentIds,
+        'chat_id': chatId,
       }),
     );
     if (resp.statusCode != 200) {
       final err = jsonDecode(resp.body);
-      throw Exception(err['detail'] ?? 'Unknown server error');
+      final detail = err['detail'];
+      if (detail is Map) {
+        throw ChatApiException(detail['message'] ?? 'Unknown server error', chatId: detail['chat_id']);
+      }
+      throw ChatApiException(detail ?? 'Unknown server error');
     }
     return ChatResult.fromJson(jsonDecode(resp.body));
+  }
+
+  // ---------------------------- Chat history (left sidebar) ----------------------------
+
+  Future<List<ChatSummary>> listChats() async {
+    await ensureToken();
+    final resp = await http.get(Uri.parse('$_effectiveBase/chats'), headers: _headers);
+    if (resp.statusCode != 200) throw Exception('Failed to load chat history');
+    final data = jsonDecode(resp.body);
+    return (data['chats'] as List? ?? []).map((c) => ChatSummary.fromJson(c)).toList();
+  }
+
+  Future<ChatDetail> getChat(String chatId) async {
+    await ensureToken();
+    final resp = await http.get(Uri.parse('$_effectiveBase/chats/$chatId'), headers: _headers);
+    if (resp.statusCode != 200) {
+      final err = jsonDecode(resp.body);
+      throw Exception(err['detail'] ?? 'Failed to open this chat');
+    }
+    return ChatDetail.fromJson(jsonDecode(resp.body));
+  }
+
+  Future<void> renameChat(String chatId, String title) async {
+    await ensureToken();
+    final resp = await http.patch(
+      Uri.parse('$_effectiveBase/chats/$chatId'),
+      headers: _headers,
+      body: jsonEncode({'title': title}),
+    );
+    if (resp.statusCode != 200) throw Exception('Failed to rename chat');
+  }
+
+  Future<void> deleteChat(String chatId) async {
+    await ensureToken();
+    final resp = await http.delete(Uri.parse('$_effectiveBase/chats/$chatId'), headers: _headers);
+    if (resp.statusCode != 200) throw Exception('Failed to delete chat');
   }
 
   Future<ExecuteResult> execute(String command,

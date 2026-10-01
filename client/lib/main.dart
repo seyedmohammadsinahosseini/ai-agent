@@ -15,6 +15,7 @@ import 'widgets/voice_input_button.dart';
 import 'widgets/attachment_button.dart';
 import 'widgets/workdir_button.dart';
 import 'widgets/confirm_dialogs.dart';
+import 'widgets/chat_sidebar.dart';
 
 void main() {
   runApp(const AiTerminalApp());
@@ -92,6 +93,12 @@ class _ChatScreenState extends State<ChatScreen> {
   ModelInfo? _selectedModel;
   bool _modelPanelOpen = true;
 
+  // ---------------------------- Chat history (left sidebar) ----------------------------
+  bool _sidebarOpen = true;
+  List<ChatSummary> _chats = [];
+  bool _chatsLoading = true;
+  String? _currentChatId;
+
   WebSocketChannel? _wsChannel;
   StreamSubscription? _wsSub;
   ChatMessageItem? _activeExecutionMessage;
@@ -108,8 +115,73 @@ class _ChatScreenState extends State<ChatScreen> {
       await _api.ensureToken();
       setState(() => _connectionError = null);
       await _refreshProviders();
+      await _refreshChatList();
     } catch (e) {
       setState(() => _connectionError = e.toString());
+    }
+  }
+
+  // ---------------------------- Chat history (left sidebar) ----------------------------
+
+  Future<void> _refreshChatList() async {
+    try {
+      final chats = await _api.listChats();
+      if (!mounted) return;
+      setState(() {
+        _chats = chats;
+        _chatsLoading = false;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _chatsLoading = false);
+    }
+  }
+
+  void _startNewChat() {
+    setState(() {
+      _messages.clear();
+      _currentChatId = null;
+      _pendingAttachments.clear();
+    });
+  }
+
+  Future<void> _openChat(String chatId) async {
+    try {
+      final detail = await _api.getChat(chatId);
+      if (!mounted) return;
+      setState(() {
+        _messages
+          ..clear()
+          ..addAll(detail.messages.map((m) => ChatMessageItem.fromHistory(m)));
+        _currentChatId = chatId;
+      });
+      _scrollToBottom();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_cleanErrorMessage(e)), backgroundColor: AppColors.blocked),
+        );
+      }
+    }
+  }
+
+  Future<void> _deleteChat(String chatId) async {
+    final wasActive = _currentChatId == chatId;
+    try {
+      await _api.deleteChat(chatId);
+      if (!mounted) return;
+      setState(() {
+        _chats.removeWhere((c) => c.id == chatId);
+        if (wasActive) {
+          _messages.clear();
+          _currentChatId = null;
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_cleanErrorMessage(e)), backgroundColor: AppColors.blocked),
+        );
+      }
     }
   }
 
@@ -214,11 +286,14 @@ class _ChatScreenState extends State<ChatScreen> {
         mode: _mode.wireValue,
         workingDir: _workingDir,
         attachmentIds: attachmentIds,
+        chatId: _currentChatId,
       );
 
       final risk = result.riskLevel != null ? riskFromString(result.riskLevel) : null;
+      final isNewChat = _currentChatId == null;
 
       setState(() {
+        _currentChatId = result.chatId;
         _messages.add(ChatMessageItem(
           isUser: false,
           text: result.replyText,
@@ -233,9 +308,27 @@ class _ChatScreenState extends State<ChatScreen> {
           blockedReason: result.blockedReason,
         ));
       });
+      // Refresh the sidebar so a brand new chat appears in the list (or an
+      // existing one moves to the top / picks up its freshly-derived title).
+      if (isNewChat) {
+        unawaited(_refreshChatList());
+      }
 
       if (workspaceAttachments.isNotEmpty) {
         // Already uploaded above; nothing further needed here.
+      }
+    } on ChatApiException catch (e) {
+      final wasNewChat = _currentChatId == null;
+      setState(() {
+        // Even a failed request may have created/found the chat server-side
+        // (e.g. a bad API key on the very first message) - keep tracking it
+        // so the next message in this conversation appends correctly
+        // instead of silently starting yet another chat.
+        if (e.chatId != null) _currentChatId = e.chatId;
+        _messages.add(ChatMessageItem(isUser: false, text: e.message, isError: true));
+      });
+      if (wasNewChat && e.chatId != null) {
+        unawaited(_refreshChatList());
       }
     } catch (e) {
       setState(() {
@@ -360,6 +453,11 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        leading: IconButton(
+          tooltip: _sidebarOpen ? 'Hide chat history' : 'Show chat history',
+          icon: Icon(_sidebarOpen ? Icons.menu_open_rounded : Icons.menu_rounded),
+          onPressed: () => setState(() => _sidebarOpen = !_sidebarOpen),
+        ),
         title: Row(
           children: [
             Container(
@@ -387,6 +485,16 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
       body: Row(
         children: [
+          ChatSidebar(
+            open: _sidebarOpen,
+            chats: _chats,
+            activeChatId: _currentChatId,
+            loading: _chatsLoading,
+            onToggle: () => setState(() => _sidebarOpen = !_sidebarOpen),
+            onNewChat: _startNewChat,
+            onOpenChat: _openChat,
+            onDeleteChat: _deleteChat,
+          ),
           Expanded(
             child: Column(
               children: [

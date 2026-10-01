@@ -41,4 +41,25 @@ class ChatMessageItem {
     this.isError = false,
     this.attachments = const [],
   });
+
+  /// Rebuilds a message bubble from a previously-saved chat history entry
+  /// (see ApiClient.getChat), so reopening a past conversation from the
+  /// sidebar looks the same as it did live.
+  factory ChatMessageItem.fromHistory(ChatHistoryMessage m) {
+    final risk = m.riskLevel != null ? riskFromString(m.riskLevel) : null;
+    return ChatMessageItem(
+      isUser: m.role == 'user',
+      text: m.content,
+      mode: m.mode,
+      suggestedCommand: m.suggestedCommand,
+      riskLevel: risk,
+      riskReason: m.riskHumanReason,
+      output: m.autoExecuted ? m.executionOutput : null,
+      exitCode: m.autoExecuted ? m.executionExitCode : null,
+      pendingConfirmation: false,
+      blocked: risk == RiskLevel.blocked || risk == RiskLevel.blockedByMode,
+      blockedReason: m.blockedReason,
+      isError: m.isError,
+    );
+  }
 }
