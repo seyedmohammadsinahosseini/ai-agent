@@ -21,6 +21,7 @@ class ChatMessageItem {
   String? blockedReason;
   bool isStreaming;
   bool wasStopped;
+  final bool isError;
   final List<ChatAttachmentBadge> attachments;
 
   ChatMessageItem({
@@ -37,6 +38,7 @@ class ChatMessageItem {
     this.blockedReason,
     this.isStreaming = false,
     this.wasStopped = false,
+    this.isError = false,
     this.attachments = const [],
   });
 }

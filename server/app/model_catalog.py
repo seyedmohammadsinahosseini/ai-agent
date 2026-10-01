@@ -41,6 +41,22 @@ def models_for_configured_providers(configured: list[str]) -> list[ModelInfo]:
     return [m for m in _CATALOG if m.provider in configured]
 
 
+def models_for_custom_providers(custom_providers: list[dict]) -> list[ModelInfo]:
+    """Builds ModelInfo entries for user-added custom (arbitrary base URL)
+    providers, using whatever model id(s) were auto-detected or manually
+    entered when the provider was connected."""
+    out: list[ModelInfo] = []
+    for p in custom_providers:
+        for model_id in p.get("models", []):
+            out.append(ModelInfo(
+                id=model_id,
+                label=f"{model_id}",
+                provider=f"custom:{p['id']}",
+                description=f"Via {p['label']} ({p['base_url']})",
+            ))
+    return out
+
+
 def default_model_for(provider: str) -> str:
     models = models_for_provider(provider)
     return models[0].id if models else ""

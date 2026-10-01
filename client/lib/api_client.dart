@@ -27,15 +27,34 @@ class ModelInfo {
       );
 }
 
+class CustomProviderInfo {
+  final String id;
+  final String label;
+  final String baseUrl;
+  final List<String> models;
+  CustomProviderInfo({required this.id, required this.label, required this.baseUrl, required this.models});
+
+  factory CustomProviderInfo.fromJson(Map<String, dynamic> j) => CustomProviderInfo(
+        id: j['id'],
+        label: j['label'],
+        baseUrl: j['base_url'],
+        models: List<String>.from(j['models'] ?? []),
+      );
+}
+
 class ProvidersStatus {
   final List<String> configuredProviders;
   final List<ModelInfo> availableModels;
-  ProvidersStatus({required this.configuredProviders, required this.availableModels});
+  final List<CustomProviderInfo> customProviders;
+  ProvidersStatus({required this.configuredProviders, required this.availableModels, this.customProviders = const []});
 
   factory ProvidersStatus.fromJson(Map<String, dynamic> j) => ProvidersStatus(
         configuredProviders: List<String>.from(j['configured_providers'] ?? []),
         availableModels: (j['available_models'] as List? ?? [])
             .map((m) => ModelInfo.fromJson(m))
+            .toList(),
+        customProviders: (j['custom_providers'] as List? ?? [])
+            .map((p) => CustomProviderInfo.fromJson(p))
             .toList(),
       );
 }
@@ -204,6 +223,55 @@ class ApiClient {
       body: jsonEncode({'provider': provider, 'api_key': apiKey}),
     );
     if (resp.statusCode != 200) throw Exception('Failed to save the API key');
+  }
+
+  /// Removes a saved built-in provider key, so the user can connect a
+  /// different key/account in its place whenever they want.
+  Future<void> deleteApiKey(String provider) async {
+    await ensureToken();
+    final resp = await http.delete(
+      Uri.parse('$_effectiveBase/providers/api-key/$provider'),
+      headers: _headers,
+    );
+    if (resp.statusCode != 200) throw Exception('Failed to remove the API key');
+  }
+
+  /// Connects an arbitrary OpenAI-API-compatible provider by URL (Groq,
+  /// OpenRouter, Together, DeepSeek, a self-hosted Ollama/LM Studio server,
+  /// etc.), instead of picking from the built-in presets. If [model] is left
+  /// null/empty, the server tries to auto-detect which models the key can
+  /// access via GET {base_url}/models.
+  Future<CustomProviderInfo> addCustomProvider({
+    required String label,
+    required String baseUrl,
+    required String apiKey,
+    String? model,
+  }) async {
+    await ensureToken();
+    final resp = await http.post(
+      Uri.parse('$_effectiveBase/providers/custom'),
+      headers: _headers,
+      body: jsonEncode({
+        'label': label,
+        'base_url': baseUrl,
+        'api_key': apiKey,
+        if (model != null && model.trim().isNotEmpty) 'model': model.trim(),
+      }),
+    );
+    if (resp.statusCode != 200) {
+      final err = jsonDecode(resp.body);
+      throw Exception(err['detail'] ?? 'Failed to connect provider');
+    }
+    return CustomProviderInfo.fromJson(jsonDecode(resp.body));
+  }
+
+  Future<void> deleteCustomProvider(String id) async {
+    await ensureToken();
+    final resp = await http.delete(
+      Uri.parse('$_effectiveBase/providers/custom/$id'),
+      headers: _headers,
+    );
+    if (resp.statusCode != 200) throw Exception('Failed to remove provider');
   }
 
   Future<ChatResult> chat(

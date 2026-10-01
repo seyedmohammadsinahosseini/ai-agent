@@ -13,6 +13,7 @@ import os
 import json
 import secrets
 from pathlib import Path
+from typing import Optional
 
 APP_DIR = Path(os.environ.get("AITERM_HOME", Path.home() / ".ai-terminal"))
 APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -94,3 +95,109 @@ def load_provider_api_key(provider: str) -> str | None:
 
 def list_configured_providers() -> list[str]:
     return [p for p in KNOWN_PROVIDERS if load_provider_api_key(p)]
+
+
+def delete_provider_api_key(provider: str):
+    """Removes a saved built-in provider key, so the user can connect a
+    different key/account later without it being stuck."""
+    try:
+        import keyring
+        keyring.delete_password(SERVICE_NAME, provider)
+    except Exception:
+        pass
+    data = _fallback_load()
+    if provider in data:
+        del data[provider]
+        _fallback_save(data)
+
+
+# ---------------------------------------------------------------------------
+# Custom (user-added, arbitrary base URL) providers.
+#
+# Any company/service that exposes an OpenAI-compatible /chat/completions
+# endpoint (Groq, OpenRouter, Together, DeepSeek, Fireworks, local
+# Ollama/LM Studio, etc.) can be added this way instead of waiting for us to
+# hardcode a preset. Metadata (label/base_url/models) is stored in a small
+# JSON index; each provider's actual API key is stored the same secure way
+# as the built-in providers' keys (keyring, with the local-file fallback).
+# ---------------------------------------------------------------------------
+_CUSTOM_INDEX_KEY = "__custom_providers_index__"
+
+
+def _custom_provider_key_name(provider_id: str) -> str:
+    return f"custom:{provider_id}"
+
+
+def _load_custom_index() -> list[dict]:
+    raw = load_provider_api_key(_CUSTOM_INDEX_KEY)
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+
+
+def _save_custom_index(index: list[dict]):
+    save_provider_api_key(_CUSTOM_INDEX_KEY, json.dumps(index))
+
+
+def _slugify(label: str) -> str:
+    slug = "".join(c.lower() if c.isalnum() else "-" for c in label).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "provider"
+
+
+def save_custom_provider(label: str, base_url: str, api_key: str,
+                          models: list[str], provider_id: Optional[str] = None) -> dict:
+    """Create (or update, if provider_id refers to an existing entry) a
+    custom provider entry. Returns the saved metadata dict."""
+    index = _load_custom_index()
+
+    if provider_id and any(p["id"] == provider_id for p in index):
+        entry_id = provider_id
+    else:
+        base_slug = _slugify(label)
+        entry_id = base_slug
+        existing_ids = {p["id"] for p in index}
+        n = 2
+        while entry_id in existing_ids:
+            entry_id = f"{base_slug}-{n}"
+            n += 1
+
+    entry = {"id": entry_id, "label": label, "base_url": base_url.rstrip("/"), "models": models}
+    index = [p for p in index if p["id"] != entry_id]
+    index.append(entry)
+    _save_custom_index(index)
+    save_provider_api_key(_custom_provider_key_name(entry_id), api_key)
+    return entry
+
+
+def list_custom_providers() -> list[dict]:
+    return _load_custom_index()
+
+
+def get_custom_provider(provider_id: str) -> Optional[dict]:
+    for p in _load_custom_index():
+        if p["id"] == provider_id:
+            return p
+    return None
+
+
+def load_custom_provider_api_key(provider_id: str) -> Optional[str]:
+    return load_provider_api_key(_custom_provider_key_name(provider_id))
+
+
+def delete_custom_provider(provider_id: str):
+    index = [p for p in _load_custom_index() if p["id"] != provider_id]
+    _save_custom_index(index)
+    try:
+        import keyring
+        keyring.delete_password(SERVICE_NAME, _custom_provider_key_name(provider_id))
+    except Exception:
+        pass
+    data = _fallback_load()
+    if _custom_provider_key_name(provider_id) in data:
+        del data[_custom_provider_key_name(provider_id)]
+        _fallback_save(data)

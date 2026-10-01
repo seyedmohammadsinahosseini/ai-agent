@@ -37,6 +37,12 @@ class ModelPanel extends StatelessWidget {
       grouped.putIfAbsent(m.provider, () => []).add(m);
     }
 
+    // Custom (user-added, arbitrary base URL) providers don't have a static
+    // label/icon in the maps above, so build a lookup for them here.
+    final customLabels = {for (final p in status.customProviders) 'custom:${p.id}': p.label};
+
+    String labelFor(String providerKey) => providerLabels[providerKey] ?? customLabels[providerKey] ?? providerKey;
+
     return Container(
       width: 260,
       margin: const EdgeInsets.fromLTRB(0, 12, 12, 12),
@@ -100,11 +106,11 @@ class ModelPanel extends StatelessWidget {
                             padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
                             child: Row(
                               children: [
-                                Icon(providerIcons[entry.key] ?? Icons.circle,
+                                Icon(providerIcons[entry.key] ?? Icons.hub_outlined,
                                     size: 12, color: AppColors.textMuted),
                                 const SizedBox(width: 6),
                                 Text(
-                                  providerLabels[entry.key] ?? entry.key,
+                                  labelFor(entry.key),
                                   style: const TextStyle(
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,

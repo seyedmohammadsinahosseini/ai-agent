@@ -2,7 +2,11 @@ from pydantic import BaseModel, Field
 from typing import Literal, Optional
 
 AgentMode = Literal["plan", "build"]
+# Built-in providers are still a closed set for the well-known presets, but
+# a chat/model "provider" string elsewhere in the app is just str, because
+# custom (user-added, arbitrary base URL) providers use ids like "custom:groq".
 Provider = Literal["openai", "anthropic", "gemini"]
+
 
 
 class ChatMessage(BaseModel):
@@ -18,7 +22,9 @@ class AttachmentRef(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: list[ChatMessage] = Field(..., min_length=1)
-    provider: Provider = "openai"
+    # A built-in id ("openai"/"anthropic"/"gemini") or a custom provider id
+    # in the form "custom:<slug>" (see CustomProviderInfo below).
+    provider: str = "openai"
     model: Optional[str] = None
     mode: AgentMode = "plan"
     working_dir: Optional[str] = None
@@ -66,13 +72,34 @@ class SaveApiKeyRequest(BaseModel):
 class ModelInfo(BaseModel):
     id: str
     label: str
-    provider: Provider
+    provider: str
     description: str = ""
+
+
+class CustomProviderCreate(BaseModel):
+    """Request to add (or update, if the label already resolves to the same
+    id) a custom OpenAI-API-compatible provider by URL, instead of picking
+    from the fixed OpenAI/Anthropic/Gemini presets."""
+    label: str
+    base_url: str
+    api_key: str
+    # Optional: if omitted, the server tries GET {base_url}/models to
+    # auto-detect which models this key can access (most OpenAI-compatible
+    # providers support this endpoint).
+    model: Optional[str] = None
+
+
+class CustomProviderInfo(BaseModel):
+    id: str
+    label: str
+    base_url: str
+    models: list[str] = Field(default_factory=list)
 
 
 class ProviderStatus(BaseModel):
     configured_providers: list[Provider]
     available_models: list[ModelInfo]
+    custom_providers: list[CustomProviderInfo] = Field(default_factory=list)
 
 
 class FolderEntry(BaseModel):

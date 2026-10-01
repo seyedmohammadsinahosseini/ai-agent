@@ -137,6 +137,14 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// Strips Dart's "Exception: " wrapper so the server's already-friendly
+  /// error message (see ai_providers.py's _http_error_message) is shown to
+  /// the user as-is, without confusing programming-language noise.
+  String _cleanErrorMessage(Object e) {
+    final text = e.toString();
+    return text.startsWith('Exception: ') ? text.substring('Exception: '.length) : text;
+  }
+
   // ---------------------------- Working folder ----------------------------
 
   Future<void> _openFolderPicker() async {
@@ -231,7 +239,11 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     } catch (e) {
       setState(() {
-        _messages.add(ChatMessageItem(isUser: false, text: 'Error: ${e.toString()}'));
+        _messages.add(ChatMessageItem(
+          isUser: false,
+          text: _cleanErrorMessage(e),
+          isError: true,
+        ));
       });
     } finally {
       setState(() => _sending = false);
@@ -498,13 +510,35 @@ class _ChatScreenState extends State<ChatScreen> {
         padding: const EdgeInsets.all(14),
         constraints: const BoxConstraints(maxWidth: 620),
         decoration: BoxDecoration(
-          color: AppColors.surface,
+          color: m.isError ? AppColors.blocked.withValues(alpha: 0.08) : AppColors.surface,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.borderSubtle),
+          border: Border.all(color: m.isError ? AppColors.blocked.withValues(alpha: 0.35) : AppColors.borderSubtle),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            if (m.isError)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline, size: 14, color: AppColors.blocked),
+                    const SizedBox(width: 5),
+                    const Text('Something went wrong',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.blocked)),
+                    const Spacer(),
+                    InkWell(
+                      onTap: _openSettings,
+                      borderRadius: BorderRadius.circular(6),
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        child: Text('Open Settings',
+                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.accent)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (m.mode != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 6),

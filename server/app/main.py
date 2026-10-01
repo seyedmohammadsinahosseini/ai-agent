@@ -17,11 +17,16 @@ from fastapi import FastAPI, Depends, HTTPException, Header, WebSocket, WebSocke
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .config import get_or_create_local_token, save_provider_api_key, list_configured_providers
+from .config import (
+    get_or_create_local_token, save_provider_api_key, list_configured_providers,
+    delete_provider_api_key,
+    save_custom_provider, list_custom_providers, delete_custom_provider,
+)
 from .models import (
     ChatRequest, ChatResponse, SuggestedCommand,
     ExecuteRequest, ExecuteResponse,
     SaveApiKeyRequest, ProviderStatus,
+    CustomProviderCreate, CustomProviderInfo,
     BrowseFolderResponse, SelectWorkingDirRequest, SelectWorkingDirResponse,
     UploadResponse,
 )
@@ -29,7 +34,7 @@ from . import engine_bridge
 from . import workspace
 from . import uploads
 from . import model_catalog
-from .ai_providers import suggest_command, ProviderError
+from .ai_providers import suggest_command, discover_models, ProviderError
 from .execution_service import authorize
 
 app = FastAPI(title="AI Terminal Local API", version="0.2.0")
@@ -73,15 +78,61 @@ def get_local_token():
 @app.get("/providers/status", response_model=ProviderStatus, dependencies=[Depends(verify_token)])
 def providers_status():
     configured = list_configured_providers()
+    custom = list_custom_providers()
+    models = model_catalog.models_for_configured_providers(configured) + \
+        model_catalog.models_for_custom_providers(custom)
     return ProviderStatus(
         configured_providers=configured,
-        available_models=model_catalog.models_for_configured_providers(configured),
+        available_models=models,
+        custom_providers=[CustomProviderInfo(**p) for p in custom],
     )
 
 
 @app.post("/providers/api-key", dependencies=[Depends(verify_token)])
 def set_api_key(req: SaveApiKeyRequest):
     save_provider_api_key(req.provider, req.api_key)
+    return {"ok": True}
+
+
+@app.delete("/providers/api-key/{provider}", dependencies=[Depends(verify_token)])
+def remove_api_key(provider: str):
+    """Lets the user remove a saved built-in provider key (e.g. to replace it
+    with a key from a different account) without restarting the app."""
+    delete_provider_api_key(provider)
+    return {"ok": True}
+
+
+@app.post("/providers/custom", response_model=CustomProviderInfo, dependencies=[Depends(verify_token)])
+async def add_custom_provider(req: CustomProviderCreate):
+    """Connect an arbitrary OpenAI-API-compatible provider by URL (Groq,
+    OpenRouter, Together, DeepSeek, a self-hosted Ollama/LM Studio server,
+    etc.) instead of picking from the built-in OpenAI/Anthropic/Gemini
+    presets. If no model is given, the server tries to auto-detect which
+    models the key can access via GET {base_url}/models."""
+    base_url = req.base_url.strip()
+    if not (base_url.startswith("http://") or base_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="Base URL must start with http:// or https://")
+
+    models: list[str] = []
+    if req.model:
+        models = [req.model.strip()]
+    else:
+        models = await discover_models(base_url, req.api_key)
+        if not models:
+            raise HTTPException(
+                status_code=400,
+                detail="Couldn't auto-detect any models for this URL/key. "
+                       "Please enter a model id manually.",
+            )
+
+    entry = save_custom_provider(label=req.label.strip(), base_url=base_url,
+                                  api_key=req.api_key, models=models)
+    return CustomProviderInfo(**entry)
+
+
+@app.delete("/providers/custom/{provider_id}", dependencies=[Depends(verify_token)])
+def remove_custom_provider(provider_id: str):
+    delete_custom_provider(provider_id)
     return {"ok": True}
 
 
