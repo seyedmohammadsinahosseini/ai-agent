@@ -11,7 +11,7 @@ Provider = Literal["openai", "anthropic", "gemini"]
 
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
-    content: str
+    content: str = Field(..., min_length=1, max_length=100_000)
 
 
 class AttachmentRef(BaseModel):
@@ -21,22 +21,22 @@ class AttachmentRef(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    messages: list[ChatMessage] = Field(..., min_length=1)
+    messages: list[ChatMessage] = Field(..., min_length=1, max_length=100)
     # A built-in id ("openai"/"anthropic"/"gemini") or a custom provider id
     # in the form "custom:<slug>" (see CustomProviderInfo below).
     provider: str = "openai"
     model: Optional[str] = None
     mode: AgentMode = "plan"
     working_dir: Optional[str] = None
-    attachment_ids: list[str] = Field(default_factory=list)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=10)
     # Which saved conversation (sidebar history) this message belongs to. If
     # omitted/null, the server starts a brand new chat and returns its id.
     chat_id: Optional[str] = None
 
 
 class SuggestedCommand(BaseModel):
-    command: str
-    explanation: str  # plain-language explanation for the end user
+    command: str = Field(..., min_length=1, max_length=20_000)
+    explanation: str = Field(default="", max_length=20_000)
 
 
 class ChatResponse(BaseModel):
@@ -49,18 +49,20 @@ class ChatResponse(BaseModel):
     execution_output: Optional[str] = None
     execution_exit_code: Optional[int] = None
     blocked_reason: Optional[str] = None
-    # The chat (conversation) this exchange was saved under - always set, so
-    # the client can keep sending follow-up messages under the same history
-    # entry even if it started the conversation without one.
+    # Stable ids let the client associate later WebSocket execution output
+    # with this exact stored assistant turn.
     chat_id: str
+    assistant_message_id: str
 
 
 
 class ExecuteRequest(BaseModel):
-    command: str
+    command: str = Field(..., min_length=1, max_length=20_000)
     working_dir: Optional[str] = None
     user_confirmed: bool = False
     confirmation_phrase: Optional[str] = None  # required for DANGEROUS commands
+    chat_id: Optional[str] = None
+    message_id: Optional[str] = None
 
 
 class ExecuteResponse(BaseModel):
@@ -159,6 +161,7 @@ class ChatHistoryMessage(BaseModel):
     auto_executed: bool = False
     execution_output: Optional[str] = None
     execution_exit_code: Optional[int] = None
+    execution_was_stopped: bool = False
     blocked_reason: Optional[str] = None
 
 

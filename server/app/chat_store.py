@@ -24,13 +24,18 @@ DB_PATH = APP_DIR / "chats.db"
 # column per field, so adding new fields later doesn't need a migration.
 _EXTRA_FIELDS = (
     "mode", "suggested_command", "risk_level", "risk_human_reason",
-    "auto_executed", "execution_output", "execution_exit_code", "blocked_reason",
+    "auto_executed", "execution_output", "execution_exit_code",
+    "execution_was_stopped", "blocked_reason",
 )
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # A streaming completion callback may update a message while an HTTP
+    # request is listing chats. WAL + a busy timeout avoid needless
+    # "database is locked" failures in this small multi-threaded local app.
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 10000")
     return conn
 
 
@@ -60,6 +65,7 @@ def _init_db():
         """
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)")
+    conn.execute("PRAGMA journal_mode = WAL")
     conn.commit()
     conn.close()
 
@@ -167,6 +173,68 @@ def add_message(chat_id: str, role: str, content: str, is_error: bool = False,
     conn.commit()
     conn.close()
     return {"id": msg_id, "role": role, "content": content, "is_error": is_error, "created_at": now}
+
+
+def message_belongs_to_chat(message_id: str, chat_id: str, role: str = "assistant") -> bool:
+    conn = _connect()
+    row = conn.execute(
+        "SELECT 1 FROM messages WHERE id = ? AND chat_id = ? AND role = ?",
+        (message_id, chat_id, role),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def message_command_matches(message_id: str, chat_id: str, command: str) -> bool:
+    conn = _connect()
+    row = conn.execute(
+        "SELECT extra_json FROM messages WHERE id = ? AND chat_id = ? AND role = 'assistant'",
+        (message_id, chat_id),
+    ).fetchone()
+    conn.close()
+    if not row or not row["extra_json"]:
+        return False
+    try:
+        extra = json.loads(row["extra_json"])
+    except json.JSONDecodeError:
+        return False
+    suggestion = extra.get("suggested_command") or {}
+    return isinstance(suggestion, dict) and suggestion.get("command") == command
+
+
+def update_message_execution(message_id: str, chat_id: str, output: str,
+                             exit_code: int, was_stopped: bool = False) -> bool:
+    """Persist output produced after a confirmation/streaming execution.
+
+    The ids are checked together so a client cannot attach output to another
+    conversation. Existing assistant metadata is merged, not replaced.
+    """
+    conn = _connect()
+    row = conn.execute(
+        "SELECT extra_json FROM messages WHERE id = ? AND chat_id = ? AND role = 'assistant'",
+        (message_id, chat_id),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return False
+    try:
+        extra = json.loads(row["extra_json"]) if row["extra_json"] else {}
+    except json.JSONDecodeError:
+        extra = {}
+    extra.update({
+        "execution_output": output,
+        "execution_exit_code": exit_code,
+        "execution_was_stopped": was_stopped,
+    })
+    now = _now()
+    conn.execute(
+        "UPDATE messages SET extra_json = ? WHERE id = ? AND chat_id = ?",
+        (json.dumps(extra), message_id, chat_id),
+    )
+    conn.execute("UPDATE chats SET updated_at = ? WHERE id = ?", (now, chat_id))
+    conn.commit()
+    conn.close()
+    return True
 
 
 def rename_chat(chat_id: str, title: str):

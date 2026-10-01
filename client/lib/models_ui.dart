@@ -8,7 +8,7 @@ extension AgentModeX on AgentMode {
   String get label => this == AgentMode.plan ? 'Plan' : 'Build';
 }
 
-enum RiskLevel { safe, confirm, dangerous, blocked, blockedByMode, busy }
+enum RiskLevel { safe, confirm, dangerous, blocked, blockedByMode, blockedByWorkspace, busy }
 
 RiskLevel riskFromString(String? s) {
   switch (s) {
@@ -20,6 +20,8 @@ RiskLevel riskFromString(String? s) {
       return RiskLevel.blocked;
     case 'BLOCKED_BY_MODE':
       return RiskLevel.blockedByMode;
+    case 'BLOCKED_BY_WORKSPACE':
+      return RiskLevel.blockedByWorkspace;
     case 'BUSY':
       return RiskLevel.busy;
     default:

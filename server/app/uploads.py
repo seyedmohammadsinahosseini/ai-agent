@@ -15,9 +15,10 @@ Security notes:
 - Context uploads never leave the app's private storage directory; only their
   extracted text (bounded in size) is included in prompts sent to the AI.
 """
+import os
 import re
+import time
 import uuid
-import shutil
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -42,9 +43,19 @@ class StoredUpload:
 
 
 def sanitize_filename(filename: str) -> str:
-    name = Path(filename).name  # strips any directory components
-    name = _SAFE_NAME_RE.sub("_", name)
-    return name or "file"
+    name = _SAFE_NAME_RE.sub("_", Path(filename).name) or "file"
+    name = name.rstrip(". ") or "file"
+    windows_reserved = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                        *(f"LPT{i}" for i in range(1, 10))}
+    if Path(name).stem.upper() in windows_reserved or name in (".", ".."):
+        name = f"_{name.replace('.', '_')}"
+    # Stay below common filesystem component limits while preserving a useful
+    # extension and leaving room for collision suffixes/UUID prefixes.
+    if len(name) > 180:
+        suffix = Path(name).suffix[:20]
+        stem_limit = max(1, 180 - len(suffix))
+        name = Path(name).stem[:stem_limit] + suffix
+    return name
 
 
 _UPLOAD_REGISTRY: dict[str, StoredUpload] = {}
@@ -66,9 +77,14 @@ def save_context_upload(filename: str, data: bytes) -> StoredUpload:
 def save_workspace_upload(filename: str, data: bytes, working_dir: str) -> StoredUpload:
     if len(data) > MAX_UPLOAD_BYTES:
         raise ValueError(f"File too large (max {MAX_UPLOAD_BYTES // (1024*1024)} MB).")
-    target_dir = Path(working_dir)
-    if not target_dir.exists() or not target_dir.is_dir():
+    try:
+        target_dir = Path(working_dir).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
         raise ValueError("The selected working folder is not valid.")
+    if not target_dir.is_dir():
+        raise ValueError("The selected working folder is not valid.")
+    if not os.access(target_dir, os.W_OK):
+        raise ValueError("The selected working folder is not writable.")
 
     safe_name = sanitize_filename(filename)
     dest = target_dir / safe_name
@@ -91,8 +107,20 @@ def get_upload(upload_id: str) -> StoredUpload | None:
     return _UPLOAD_REGISTRY.get(upload_id)
 
 
+def delete_context_upload(upload_id: str) -> bool:
+    upload = _UPLOAD_REGISTRY.get(upload_id)
+    if not upload or upload.kind != "context":
+        return False
+    _UPLOAD_REGISTRY.pop(upload_id, None)
+    try:
+        Path(upload.saved_path).unlink(missing_ok=True)
+    except OSError:
+        return False
+    return True
+
+
 def read_context_text(upload_id: str) -> str | None:
-    """Best-effort text extraction for inlining into the AI prompt (plain text only in this PoC)."""
+    """Best-effort bounded text extraction for inlining into the AI prompt."""
     upload = _UPLOAD_REGISTRY.get(upload_id)
     if not upload or upload.kind != "context":
         return None
@@ -103,3 +131,20 @@ def read_context_text(upload_id: str) -> str | None:
     if len(content) > MAX_CONTEXT_CHARS:
         content = content[:MAX_CONTEXT_CHARS] + "\n...[truncated]"
     return content
+
+
+def cleanup_stale_context_files(max_age_seconds: int = 24 * 60 * 60) -> int:
+    """Remove scratch files left behind by crashes or abandoned browser tabs."""
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    for path in CONTEXT_STORE_DIR.iterdir():
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+cleanup_stale_context_files()

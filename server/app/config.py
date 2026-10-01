@@ -4,10 +4,9 @@ Configuration and secure storage for the BYOK API keys.
 Security note:
 - On Windows (final build), the `keyring` package should be used, which
   automatically uses the Windows Credential Manager (backed by DPAPI).
-- In this PoC (running inside a Linux sandbox), if `keyring` can't find a
-  suitable backend (e.g. no D-Bus/Secret Service available), it falls back to
-  a locally-encrypted-ish file - for testing only. Never rely on this fallback
-  as the primary mechanism in the real Windows build.
+- If `keyring` cannot find a suitable backend, production fails closed rather
+  than silently writing plaintext. A JSON fallback exists only when explicitly
+  enabled with AITERM_ALLOW_PLAINTEXT_KEY_FALLBACK=1 for isolated development.
 """
 import os
 import json
@@ -17,9 +16,31 @@ from typing import Optional
 
 APP_DIR = Path(os.environ.get("AITERM_HOME", Path.home() / ".ai-terminal"))
 APP_DIR.mkdir(parents=True, exist_ok=True)
+try:
+    os.chmod(APP_DIR, 0o700)
+except OSError:
+    pass
 
 LOCAL_TOKEN_FILE = APP_DIR / "local_api_token.txt"
 SECRETS_FILE = APP_DIR / "secrets.local.json"  # dev/test fallback only
+
+
+def _csv_env(name: str, default: str) -> list[str]:
+    return [item.strip().rstrip("/") for item in os.environ.get(name, default).split(",") if item.strip()]
+
+
+# Browser access is same-origin by default. Extra development origins/hosts
+# must be opted into explicitly rather than inheriting a wildcard CORS policy.
+ALLOWED_ORIGINS = _csv_env(
+    "AITERM_ALLOWED_ORIGINS",
+    "http://127.0.0.1:8765,http://localhost:8765",
+)
+ALLOWED_HOSTS = _csv_env("AITERM_ALLOWED_HOSTS", "127.0.0.1,localhost,testserver")
+ALLOW_REMOTE_WEB_BOOTSTRAP = os.environ.get("AITERM_ALLOW_REMOTE_WEB_BOOTSTRAP", "0") == "1"
+# Plaintext key storage is never silently selected. It exists only as an
+# explicit development escape hatch for headless Linux environments without a
+# keyring backend.
+ALLOW_PLAINTEXT_SECRET_FALLBACK = os.environ.get("AITERM_ALLOW_PLAINTEXT_KEY_FALLBACK", "0") == "1"
 
 
 def get_or_create_local_token() -> str:
@@ -77,18 +98,32 @@ KNOWN_PROVIDERS = ["openai", "anthropic", "gemini"]
 
 
 def save_provider_api_key(provider: str, api_key: str):
-    """Securely store the user's API key (BYOK)."""
-    ok = _try_keyring_set(SERVICE_NAME, provider, api_key)
-    if not ok:
-        data = _fallback_load()
-        data[provider] = api_key
-        _fallback_save(data)
+    """Securely store the user's API key (BYOK).
+
+    Production fails closed when the OS credential store is unavailable. A
+    plaintext JSON fallback can only be enabled explicitly for isolated local
+    development with ``AITERM_ALLOW_PLAINTEXT_KEY_FALLBACK=1``.
+    """
+    if not api_key.strip():
+        raise ValueError("API key cannot be empty.")
+    if _try_keyring_set(SERVICE_NAME, provider, api_key):
+        return
+    if not ALLOW_PLAINTEXT_SECRET_FALLBACK:
+        raise RuntimeError(
+            "The operating-system credential store is unavailable, so the key was not saved. "
+            "Install/configure a keyring backend; plaintext fallback is disabled."
+        )
+    data = _fallback_load()
+    data[provider] = api_key
+    _fallback_save(data)
 
 
 def load_provider_api_key(provider: str) -> str | None:
     val = _try_keyring_get(SERVICE_NAME, provider)
     if val:
         return val
+    if not ALLOW_PLAINTEXT_SECRET_FALLBACK:
+        return None
     data = _fallback_load()
     return data.get(provider)
 

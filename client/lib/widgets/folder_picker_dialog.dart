@@ -77,7 +77,7 @@ class _FolderPickerDialogState extends State<FolderPickerDialog> {
             ),
             const SizedBox(height: 4),
             Text(
-              'The agent will only read/act inside this folder in Build mode.',
+              'Commands start here and obvious path escapes are blocked. This is not an OS sandbox.',
               style: TextStyle(color: AppColors.textMuted, fontSize: 12),
             ),
             const SizedBox(height: 12),

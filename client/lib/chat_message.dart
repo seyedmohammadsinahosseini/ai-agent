@@ -11,6 +11,8 @@ class ChatMessageItem {
   final bool isUser;
   final String text;
   final String? mode; // mode active when this message was sent/answered
+  final String? historyMessageId; // server id used to persist streamed execution output
+  final String? workingDir; // workspace in force when this command was proposed
   final SuggestedCommand? suggestedCommand;
   RiskLevel? riskLevel;
   String? riskReason;
@@ -28,6 +30,8 @@ class ChatMessageItem {
     required this.isUser,
     required this.text,
     this.mode,
+    this.historyMessageId,
+    this.workingDir,
     this.suggestedCommand,
     this.riskLevel,
     this.riskReason,
@@ -51,14 +55,18 @@ class ChatMessageItem {
       isUser: m.role == 'user',
       text: m.content,
       mode: m.mode,
+      historyMessageId: m.id,
       suggestedCommand: m.suggestedCommand,
       riskLevel: risk,
       riskReason: m.riskHumanReason,
-      output: m.autoExecuted ? m.executionOutput : null,
-      exitCode: m.autoExecuted ? m.executionExitCode : null,
+      output: m.executionOutput,
+      exitCode: m.executionExitCode,
       pendingConfirmation: false,
-      blocked: risk == RiskLevel.blocked || risk == RiskLevel.blockedByMode,
+      blocked: risk == RiskLevel.blocked ||
+          risk == RiskLevel.blockedByMode ||
+          risk == RiskLevel.blockedByWorkspace,
       blockedReason: m.blockedReason,
+      wasStopped: m.executionWasStopped,
       isError: m.isError,
     );
   }

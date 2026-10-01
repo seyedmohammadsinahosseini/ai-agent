@@ -45,6 +45,7 @@ Color riskColor(RiskLevel r) {
       return AppColors.dangerous;
     case RiskLevel.blocked:
     case RiskLevel.blockedByMode:
+    case RiskLevel.blockedByWorkspace:
       return AppColors.blocked;
     case RiskLevel.busy:
       return AppColors.textMuted;
@@ -63,6 +64,8 @@ String riskLabel(RiskLevel r) {
       return 'Blocked · will never run';
     case RiskLevel.blockedByMode:
       return 'Blocked in Plan mode';
+    case RiskLevel.blockedByWorkspace:
+      return 'Blocked by workspace guard';
     case RiskLevel.busy:
       return 'Busy';
   }
@@ -84,6 +87,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final List<ChatMessageItem> _messages = [];
   final List<PendingAttachment> _pendingAttachments = [];
   final Map<PendingAttachment, String> _uploadedIds = {};
+  final Set<PendingAttachment> _uploadsInProgress = {};
 
   bool _sending = false;
   String? _connectionError;
@@ -137,10 +141,19 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _startNewChat() {
+    if (_uploadsInProgress.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Wait for the attachment upload to finish first.')),
+      );
+      return;
+    }
+    _discardAllPendingContextUploads();
     setState(() {
       _messages.clear();
       _currentChatId = null;
       _pendingAttachments.clear();
+      _uploadedIds.clear();
+      _uploadsInProgress.clear();
     });
   }
 
@@ -190,8 +203,11 @@ class _ChatScreenState extends State<ChatScreen> {
       final status = await _api.providersStatus();
       setState(() {
         _providersStatus = status;
-        if (_selectedModel == null && status.availableModels.isNotEmpty) {
-          _selectedModel = status.availableModels.first;
+        final selectedStillExists = _selectedModel != null && status.availableModels.any(
+          (m) => m.id == _selectedModel!.id && m.provider == _selectedModel!.provider,
+        );
+        if (!selectedStillExists) {
+          _selectedModel = status.availableModels.isEmpty ? null : status.availableModels.first;
         }
       });
     } catch (_) {}
@@ -230,24 +246,58 @@ class _ChatScreenState extends State<ChatScreen> {
 
   // ---------------------------- Attachments ----------------------------
 
+  void _discardAttachment(PendingAttachment attachment) {
+    final uploadId = _uploadedIds.remove(attachment);
+    setState(() => _pendingAttachments.remove(attachment));
+    if (attachment.kind == 'context' && uploadId != null) {
+      unawaited(_api.deleteContextUpload(uploadId).catchError((_) {}));
+    }
+  }
+
+  void _discardAllPendingContextUploads() {
+    for (final attachment in List<PendingAttachment>.from(_pendingAttachments)) {
+      final uploadId = _uploadedIds[attachment];
+      if (attachment.kind == 'context' && uploadId != null) {
+        unawaited(_api.deleteContextUpload(uploadId).catchError((_) {}));
+      }
+    }
+  }
+
   Future<void> _onAttached(PendingAttachment att) async {
-    setState(() => _pendingAttachments.add(att));
+    setState(() {
+      _pendingAttachments.add(att);
+      _uploadsInProgress.add(att);
+    });
     try {
       final result = await _api.upload(att.filename, att.bytes,
           kind: att.kind, workingDir: att.kind == 'workspace' ? _workingDir : null);
-      _uploadedIds[att] = result.id;
-      if (att.kind == 'workspace' && mounted) {
+      if (!mounted) return;
+      if (!_pendingAttachments.contains(att)) {
+        _uploadsInProgress.remove(att);
+        if (att.kind == 'context') {
+          unawaited(_api.deleteContextUpload(result.id).catchError((_) {}));
+        }
+        return;
+      }
+      setState(() {
+        _uploadedIds[att] = result.id;
+        _uploadsInProgress.remove(att);
+      });
+      if (att.kind == 'workspace') {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Added "${result.filename}" to the working folder.')),
         );
       }
     } catch (e) {
-      setState(() => _pendingAttachments.remove(att));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Upload failed: $e'), backgroundColor: AppColors.blocked),
-        );
-      }
+      if (!mounted) return;
+      setState(() {
+        _pendingAttachments.remove(att);
+        _uploadsInProgress.remove(att);
+        _uploadedIds.remove(att);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Upload failed: ${_cleanErrorMessage(e)}'), backgroundColor: AppColors.blocked),
+      );
     }
   }
 
@@ -256,10 +306,28 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _send() async {
     final text = _inputController.text.trim();
     if (text.isEmpty || _sending) return;
+    if (_uploadsInProgress.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please wait for the attachment upload to finish.')),
+      );
+      return;
+    }
+    if (_selectedModel == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Connect an AI provider and choose a model first.'),
+          backgroundColor: AppColors.blocked,
+        ),
+      );
+      _openSettings();
+      return;
+    }
     _inputController.clear();
+    final requestWorkingDir = _workingDir;
 
-    final contextAttachments = _pendingAttachments.where((a) => a.kind == 'context').toList();
-    final workspaceAttachments = _pendingAttachments.where((a) => a.kind == 'workspace').toList();
+    final sentAttachments = List<PendingAttachment>.from(_pendingAttachments);
+    final contextAttachments = sentAttachments.where((a) => a.kind == 'context').toList();
+    final workspaceAttachments = sentAttachments.where((a) => a.kind == 'workspace').toList();
     final attachmentIds = contextAttachments.map((a) => _uploadedIds[a]).whereType<String>().toList();
 
     final badges = _pendingAttachments
@@ -274,17 +342,35 @@ class _ChatScreenState extends State<ChatScreen> {
     _scrollToBottom();
 
     try {
-      final history = _messages
-          .where((m) => m.isUser)
-          .map((m) => {'role': 'user', 'content': m.text})
-          .toList();
+      // Preserve both sides of the conversation. Sending only user turns
+      // made follow-up questions lose the assistant's earlier explanation,
+      // proposed command and execution result.
+      final allHistory = _messages.where((m) => !m.isError).map((m) {
+        var content = m.text;
+        if (!m.isUser && m.suggestedCommand != null) {
+          content += '\n\nProposed command: ${m.suggestedCommand!.command}';
+        }
+        if (!m.isUser && m.output != null && m.output!.isNotEmpty) {
+          final outputForContext = m.output!.length > 20000
+              ? '[earlier output truncated]\n${m.output!.substring(m.output!.length - 20000)}'
+              : m.output!;
+          content += '\n\nCommand output:\n$outputForContext';
+        }
+        if (content.length > 90000) {
+          content = '[earlier message content truncated]\n${content.substring(content.length - 90000)}';
+        }
+        return {'role': m.isUser ? 'user' : 'assistant', 'content': content};
+      }).toList();
+      final history = allHistory.length > 100
+          ? allHistory.sublist(allHistory.length - 100)
+          : allHistory;
 
       final result = await _api.chat(
         history,
-        provider: _selectedModel?.provider ?? 'openai',
-        model: _selectedModel?.id,
+        provider: _selectedModel!.provider,
+        model: _selectedModel!.id,
         mode: _mode.wireValue,
-        workingDir: _workingDir,
+        workingDir: requestWorkingDir,
         attachmentIds: attachmentIds,
         chatId: _currentChatId,
       );
@@ -298,13 +384,17 @@ class _ChatScreenState extends State<ChatScreen> {
           isUser: false,
           text: result.replyText,
           mode: result.mode,
+          historyMessageId: result.assistantMessageId,
+          workingDir: requestWorkingDir,
           suggestedCommand: result.suggestedCommand,
           riskLevel: risk,
           riskReason: result.riskHumanReason,
           output: result.autoExecuted ? result.executionOutput : null,
           exitCode: result.autoExecuted ? result.executionExitCode : null,
           pendingConfirmation: risk == RiskLevel.confirm || risk == RiskLevel.dangerous,
-          blocked: risk == RiskLevel.blocked || risk == RiskLevel.blockedByMode,
+          blocked: risk == RiskLevel.blocked ||
+              risk == RiskLevel.blockedByMode ||
+              risk == RiskLevel.blockedByWorkspace,
           blockedReason: result.blockedReason,
         ));
       });
@@ -339,7 +429,20 @@ class _ChatScreenState extends State<ChatScreen> {
         ));
       });
     } finally {
-      setState(() => _sending = false);
+      if (mounted) {
+        for (final attachment in sentAttachments) {
+          final uploadId = _uploadedIds[attachment];
+          if (attachment.kind == 'context' && uploadId != null) {
+            unawaited(_api.deleteContextUpload(uploadId).catchError((_) {}));
+          }
+        }
+        setState(() {
+          _sending = false;
+          for (final attachment in sentAttachments) {
+            _uploadedIds.remove(attachment);
+          }
+        });
+      }
       _scrollToBottom();
     }
   }
@@ -350,9 +453,24 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_wsChannel != null) return;
     _wsChannel = await _api.connectExecutionSocket();
     _wsSub = _wsChannel!.stream.listen(_onSocketMessage, onError: (_) {
+      if (mounted) {
+        setState(() {
+          _isExecuting = false;
+          _activeExecutionMessage?.isStreaming = false;
+          _activeExecutionMessage?.output = 'The execution connection closed unexpectedly.';
+        });
+      }
+      _activeExecutionMessage = null;
       _wsChannel = null;
       _wsSub = null;
     }, onDone: () {
+      if (mounted && _isExecuting) {
+        setState(() {
+          _isExecuting = false;
+          _activeExecutionMessage?.isStreaming = false;
+        });
+      }
+      _activeExecutionMessage = null;
       _wsChannel = null;
       _wsSub = null;
     });
@@ -374,7 +492,12 @@ class _ChatScreenState extends State<ChatScreen> {
         break;
       case 'output':
         setState(() {
-          msg?.output = (msg.output ?? '') + (data['data'] as String);
+          if (msg != null) {
+            final combined = (msg.output ?? '') + (data['data'] as String);
+            msg.output = combined.length > 1000000
+                ? '[earlier live output truncated]\n${combined.substring(combined.length - 1000000)}'
+                : combined;
+          }
         });
         _scrollToBottom();
         break;
@@ -383,6 +506,7 @@ class _ChatScreenState extends State<ChatScreen> {
           _isExecuting = false;
           msg?.isStreaming = false;
           msg?.exitCode = data['exit_code'];
+          msg?.wasStopped = data['was_stopped'] ?? false;
           msg?.pendingConfirmation = false;
         });
         _activeExecutionMessage = null;
@@ -401,8 +525,25 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _confirmAndRun(ChatMessageItem item) async {
+    if (_isExecuting) return;
+    if (item.mode != 'build' || _mode != AgentMode.build) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Switch to Build mode before confirming this command.')),
+      );
+      return;
+    }
+    if (_currentChatId == null || item.historyMessageId == null || item.workingDir == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('This command is missing its saved chat/workspace context and cannot be run safely.'),
+          backgroundColor: AppColors.blocked,
+        ),
+      );
+      return;
+    }
+
     final cmd = item.suggestedCommand!.command;
-    bool confirmed = true;
+    bool confirmed;
     String? phrase;
 
     if (item.riskLevel == RiskLevel.dangerous) {
@@ -411,22 +552,40 @@ class _ChatScreenState extends State<ChatScreen> {
     } else {
       confirmed = await showSimpleConfirmDialog(context, command: cmd, reason: item.riskReason ?? '') ?? false;
     }
-    if (!confirmed) return;
+    if (!confirmed || _isExecuting) return;
 
-    await _ensureSocket();
-    setState(() {
-      item.pendingConfirmation = false;
-      _activeExecutionMessage = item;
-    });
+    try {
+      await _ensureSocket();
+      if (!mounted) return;
+      setState(() {
+        item.pendingConfirmation = false;
+        item.isStreaming = true;
+        item.output = 'Starting command…\n';
+        _activeExecutionMessage = item;
+        _isExecuting = true; // lock immediately; do not wait for WS "started"
+      });
 
-    _wsChannel?.sink.add(jsonEncode({
-      'type': 'run',
-      'command': cmd,
-      'mode': _mode.wireValue,
-      'working_dir': _workingDir,
-      'user_confirmed': true,
-      'confirmation_phrase': phrase,
-    }));
+      _wsChannel?.sink.add(jsonEncode({
+        'type': 'run',
+        'command': cmd,
+        'mode': item.mode,
+        'working_dir': item.workingDir,
+        'user_confirmed': true,
+        'confirmation_phrase': phrase,
+        'chat_id': _currentChatId,
+        'message_id': item.historyMessageId,
+      }));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isExecuting = false;
+        item.isStreaming = false;
+        item.pendingConfirmation = true;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(_cleanErrorMessage(e)), backgroundColor: AppColors.blocked),
+      );
+    }
   }
 
   Future<void> _onStopPressed() async {
@@ -730,7 +889,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 Padding(
                   padding: const EdgeInsets.only(top: 10),
                   child: FilledButton.icon(
-                    onPressed: () => _confirmAndRun(m),
+                    onPressed: _isExecuting ? null : () => _confirmAndRun(m),
                     icon: const Icon(Icons.play_arrow, size: 16),
                     label: const Text('Confirm & run'),
                     style: FilledButton.styleFrom(backgroundColor: riskColor(m.riskLevel!)),
@@ -758,7 +917,15 @@ class _ChatScreenState extends State<ChatScreen> {
                   ],
                 ),
               ),
-              if (m.exitCode != null)
+              if (m.wasStopped)
+                const Padding(
+                  padding: EdgeInsets.only(top: 4),
+                  child: Text(
+                    'Stopped by user',
+                    style: TextStyle(fontSize: 10.5, color: AppColors.dangerous),
+                  ),
+                )
+              else if (m.exitCode != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 4),
                   child: Text('Exit code: ${m.exitCode}',
@@ -808,12 +975,22 @@ class _ChatScreenState extends State<ChatScreen> {
               runSpacing: 6,
               children: _pendingAttachments
                   .map((a) => InputChip(
-                        avatar: Icon(
-                          a.kind == 'workspace' ? Icons.drive_folder_upload_outlined : Icons.description_outlined,
-                          size: 14,
-                        ),
+                        avatar: _uploadsInProgress.contains(a)
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(strokeWidth: 1.5),
+                              )
+                            : Icon(
+                                a.kind == 'workspace'
+                                    ? Icons.drive_folder_upload_outlined
+                                    : Icons.description_outlined,
+                                size: 14,
+                              ),
                         label: Text(a.filename, style: const TextStyle(fontSize: 11.5)),
-                        onDeleted: () => setState(() => _pendingAttachments.remove(a)),
+                        onDeleted: _uploadsInProgress.contains(a)
+                            ? null
+                            : () => _discardAttachment(a),
                       ))
                   .toList(),
             ),

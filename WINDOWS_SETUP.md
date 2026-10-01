@@ -6,10 +6,15 @@ sandbox preview) and the Flutter app as an actual Windows desktop window.
 
 ## 0. Get the project files onto your PC
 
-Since we haven't connected this to your GitHub yet, the simplest path for now:
-download/copy the whole `ai-terminal/` folder from this workspace onto your
-Windows machine (e.g. zip it up here and transfer it, or we set up GitHub
-push later — just ask).
+Clone the repository with a GitHub account that has access:
+
+```powershell
+git clone https://github.com/seyedmohammadsinahosseini/ai-terminal.git
+cd ai-terminal
+```
+
+Use Git Credential Manager or SSH for a private repository. Never place a
+personal access token directly in the clone URL or commit it to a file.
 
 ## 1. Install prerequisites
 
@@ -85,9 +90,12 @@ python -m app.main
 
 You should see:
 ```
-[AI Terminal] Local token (for client auth): <some long token>
+[AI Terminal] Local API listening on 127.0.0.1:8765 (token is not printed).
 Uvicorn running on http://127.0.0.1:8765
 ```
+
+The server writes the token to `%USERPROFILE%\.ai-terminal\local_api_token.txt`.
+The native Flutter client reads that private file directly.
 
 Leave this window running — it's your local API server. Note this defaults
 to `host="127.0.0.1"` in the real build (loopback-only), unlike the sandbox
@@ -117,8 +125,9 @@ flutter build windows
 
 1. Click the **key icon** (top right) → add an API key for at least one
    provider (OpenAI, Anthropic, or Gemini — bring your own key).
-2. Click the **folder icon** above the input box → pick a real folder you're
-   comfortable letting the agent read/write in Build mode.
+2. Click the **folder icon** above the input box → pick a non-critical folder.
+   Commands start there and common path escapes are blocked, but this is not
+   an OS-level filesystem sandbox.
 3. Try **Plan mode** first: ask a question, confirm the agent behaves
    read-only.
 4. Switch to **Build mode** and try something small and reversible, like
@@ -127,12 +136,11 @@ flutter build windows
 
 ## Known gaps / what to expect
 
-- **PowerShell vs cmd.exe**: the current ConPTY launcher runs commands
-  through `cmd.exe /C "..."`. If the AI suggests PowerShell-only syntax, it
-  currently needs to prefix it itself (e.g.
-  `powershell -NoProfile -Command "..."`) — this works today but isn't the
-  most polished experience yet. Let me know if you want the default shell
-  switched to PowerShell directly.
+- **PowerShell execution**: ConPTY launches `powershell.exe` directly with
+  `-NoLogo -NoProfile -NonInteractive`; commands should not wrap themselves
+  in another `powershell -Command` layer.
+- **Workspace boundary**: the path guard blocks common escapes, but it is not
+  an AppContainer/VM filesystem sandbox. Use non-critical test folders.
 - **Voice input is still a UI demo** (records briefly, inserts placeholder
   text) — real speech-to-text isn't wired in yet, as discussed.
 - **No installer/code signing yet** — running via `flutter run -d windows`

@@ -1,16 +1,35 @@
-# client
+# AI Terminal client
 
-A new Flutter project.
+Flutter user interface for AI Terminal. The production target is Windows
+desktop; Flutter Web is supported for same-origin local development.
 
-## Getting Started
+## Run
 
-This project is a starting point for a Flutter application.
+```bash
+flutter pub get
+flutter run -d windows
+```
 
-A few resources to get you started if this is your first Flutter project:
+Start the FastAPI service first on `http://127.0.0.1:8765`. The native client
+reads the local bearer token directly from
+`~/.ai-terminal/local_api_token.txt` (or `%USERPROFILE%\.ai-terminal` on
+Windows). If the server uses a custom `AITERM_HOME`, launch the client with the
+same environment variable.
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+For a local web build:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+flutter build web
+```
+
+The backend serves `build/web` when present. Web token bootstrap is restricted
+to loopback and same/configured origins.
+
+## Tests
+
+```bash
+flutter test
+```
+
+The widget tests cover mode switching and security-risk wire mappings. Keep
+new interaction and regression tests under `test/`.

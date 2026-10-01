@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'local_token_loader.dart';
 
 /// Default local server address for the native Windows/desktop build (no
 /// "page origin" concept exists there, unlike Flutter Web).
@@ -81,6 +82,7 @@ class ChatResult {
   final int? executionExitCode;
   final String? blockedReason;
   final String chatId;
+  final String assistantMessageId;
 
   ChatResult({
     required this.replyText,
@@ -93,6 +95,7 @@ class ChatResult {
     this.executionExitCode,
     this.blockedReason,
     required this.chatId,
+    required this.assistantMessageId,
   });
 
   factory ChatResult.fromJson(Map<String, dynamic> j) => ChatResult(
@@ -108,6 +111,7 @@ class ChatResult {
         executionExitCode: j['execution_exit_code'],
         blockedReason: j['blocked_reason'],
         chatId: j['chat_id'] ?? '',
+        assistantMessageId: j['assistant_message_id'] ?? '',
       );
 }
 
@@ -152,6 +156,7 @@ class ChatHistoryMessage {
   final bool autoExecuted;
   final String? executionOutput;
   final int? executionExitCode;
+  final bool executionWasStopped;
   final String? blockedReason;
 
   ChatHistoryMessage({
@@ -167,6 +172,7 @@ class ChatHistoryMessage {
     this.autoExecuted = false,
     this.executionOutput,
     this.executionExitCode,
+    this.executionWasStopped = false,
     this.blockedReason,
   });
 
@@ -184,6 +190,7 @@ class ChatHistoryMessage {
         autoExecuted: j['auto_executed'] ?? false,
         executionOutput: j['execution_output'],
         executionExitCode: j['execution_exit_code'],
+        executionWasStopped: j['execution_was_stopped'] ?? false,
         blockedReason: j['blocked_reason'],
       );
 }
@@ -301,11 +308,24 @@ class ApiClient {
 
   Future<void> ensureToken() async {
     if (_token != null) return;
+
+    // Native desktop reads the private token file directly. Only the
+    // same-origin Web build uses the loopback-restricted bootstrap endpoint.
+    if (!kIsWeb) {
+      _token = await loadLocalApiTokenFromDisk();
+      if (_token == null) {
+        throw Exception(
+          'Could not read the local API token. Start the server once and make sure AITERM_HOME matches.',
+        );
+      }
+      return;
+    }
+
     final resp = await http.get(Uri.parse('$_effectiveBase/local-token'));
     if (resp.statusCode == 200) {
       _token = jsonDecode(resp.body)['token'];
     } else {
-      throw Exception('Could not reach the local service. Is the server running?');
+      throw Exception('Could not securely bootstrap the local web session. Is the server running?');
     }
   }
 
@@ -328,7 +348,14 @@ class ApiClient {
       headers: _headers,
       body: jsonEncode({'provider': provider, 'api_key': apiKey}),
     );
-    if (resp.statusCode != 200) throw Exception('Failed to save the API key');
+    if (resp.statusCode != 200) {
+      try {
+        final error = jsonDecode(resp.body);
+        throw Exception(error['detail'] ?? 'Failed to save the API key');
+      } on FormatException {
+        throw Exception('Failed to save the API key');
+      }
+    }
   }
 
   /// Removes a saved built-in provider key, so the user can connect a
@@ -451,7 +478,12 @@ class ApiClient {
   }
 
   Future<ExecuteResult> execute(String command,
-      {required String mode, String? workingDir, bool userConfirmed = false, String? confirmationPhrase}) async {
+      {required String mode,
+      String? workingDir,
+      bool userConfirmed = false,
+      String? confirmationPhrase,
+      String? chatId,
+      String? messageId}) async {
     await ensureToken();
     final resp = await http.post(
       Uri.parse('$_effectiveBase/execute?mode=$mode'),
@@ -461,6 +493,8 @@ class ApiClient {
         'working_dir': workingDir,
         'user_confirmed': userConfirmed,
         'confirmation_phrase': confirmationPhrase,
+        'chat_id': chatId,
+        'message_id': messageId,
       }),
     );
     if (resp.statusCode != 200) throw Exception('Execution failed');
@@ -498,9 +532,23 @@ class ApiClient {
     return UploadResult.fromJson(jsonDecode(resp.body));
   }
 
+  Future<void> deleteContextUpload(String uploadId) async {
+    await ensureToken();
+    final resp = await http.delete(
+      Uri.parse('$_effectiveBase/uploads/$uploadId'),
+      headers: _headers,
+    );
+    if (resp.statusCode != 200) throw Exception('Failed to discard context upload');
+  }
+
   Future<WebSocketChannel> connectExecutionSocket() async {
     await ensureToken();
-    final uri = Uri.parse('$_wsBase/ws/execute?token=$_token');
+    final response = await http.post(Uri.parse('$_effectiveBase/ws-ticket'), headers: _headers);
+    if (response.statusCode != 200) {
+      throw Exception('Could not authorize the execution channel.');
+    }
+    final ticket = jsonDecode(response.body)['ticket'] as String;
+    final uri = Uri.parse('$_wsBase/ws/execute').replace(queryParameters: {'ticket': ticket});
     return WebSocketChannel.connect(uri);
   }
 }

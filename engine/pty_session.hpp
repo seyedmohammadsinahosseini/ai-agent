@@ -17,6 +17,7 @@
 // platform it's running on.
 
 #include <string>
+#include <algorithm>
 #include <functional>
 #include <stdexcept>
 #include <cstring>
@@ -47,6 +48,23 @@ struct ExecResult {
     int exit_code = -1;
 };
 
+constexpr size_t MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024;
+
+inline void appendBoundedOutput(std::string& target, const char* data, size_t size,
+                                bool& truncation_noted) {
+    if (target.size() < MAX_CAPTURED_OUTPUT_BYTES) {
+        size_t remaining = MAX_CAPTURED_OUTPUT_BYTES - target.size();
+        target.append(data, std::min(size, remaining));
+        if (size > remaining && !truncation_noted) {
+            target += "\n[output truncated]\n";
+            truncation_noted = true;
+        }
+    } else if (!truncation_noted) {
+        target += "\n[output truncated]\n";
+        truncation_noted = true;
+    }
+}
+
 #if defined(_WIN32)
 // ============================================================================
 //  WINDOWS IMPLEMENTATION (ConPTY)
@@ -58,6 +76,7 @@ struct PtyProcess {
     HPCON hpc = nullptr;
     HANDLE hProcess = nullptr;
     HANDLE hThread = nullptr;
+    HANDLE hJob = nullptr;      // owns the whole spawned process tree
     HANDLE hPipeIn = nullptr;   // write end (our side) -> ConPTY input
     HANDLE hPipeOut = nullptr;  // read end (our side) <- ConPTY output
     std::atomic<bool> killed{false};
@@ -88,8 +107,8 @@ inline std::string toUtf8(const wchar_t* buf, DWORD len) {
     return result;
 }
 
-// Launches `command` (via cmd.exe /C so normal shell syntax works) attached
-// to a fresh ConPTY, optionally starting inside `working_dir`.
+// Launches `command` through a direct non-interactive PowerShell process
+// attached to a fresh ConPTY, optionally starting inside `working_dir`.
 inline std::shared_ptr<PtyProcess> launch(const std::string& command, const std::string& working_dir) {
     auto proc = std::make_shared<PtyProcess>();
 
@@ -142,21 +161,39 @@ inline std::shared_ptr<PtyProcess> launch(const std::string& command, const std:
         throw std::runtime_error("UpdateProcThreadAttribute failed");
     }
 
-    // Run through cmd.exe /C so the user's normal shell syntax (&&, pipes,
-    // PowerShell invocations, etc.) works exactly like typing into a real
-    // terminal. Callers that want PowerShell semantics should prefix their
-    // command with `powershell -NoProfile -Command "..."` (the AI layer does
-    // this via the suggested command string itself).
-    std::wstring cmdLine = L"cmd.exe /C \"" + toWide(command) + L"\"";
+    // PowerShell is the documented/default command language of the AI layer.
+    // Launch it directly rather than nesting it inside cmd.exe /C; that avoids
+    // a second quoting/parser layer and makes normal PowerShell commands work
+    // without an error-prone `powershell -Command "..."` wrapper.
+    std::wstring cmdLine = L"powershell.exe -NoLogo -NoProfile -NonInteractive -Command " + toWide(command);
     std::vector<wchar_t> cmdLineBuf(cmdLine.begin(), cmdLine.end());
     cmdLineBuf.push_back(L'\0');
+
+    // A kill-on-close Job Object owns the process tree. Terminating only the
+    // shell process can otherwise leave installers/scripts running after the
+    // user presses Stop.
+    proc->hJob = CreateJobObjectW(nullptr, nullptr);
+    if (!proc->hJob) {
+        DeleteProcThreadAttributeList(siEx.lpAttributeList);
+        ClosePseudoConsole(proc->hpc);
+        throw std::runtime_error("CreateJobObjectW failed");
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo{};
+    jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(proc->hJob, JobObjectExtendedLimitInformation,
+                                 &jobInfo, sizeof(jobInfo))) {
+        DeleteProcThreadAttributeList(siEx.lpAttributeList);
+        CloseHandle(proc->hJob);
+        ClosePseudoConsole(proc->hpc);
+        throw std::runtime_error("SetInformationJobObject failed");
+    }
 
     PROCESS_INFORMATION pi{};
     std::wstring wWorkingDir = working_dir.empty() ? L"" : toWide(working_dir);
 
     BOOL ok = CreateProcessW(
         nullptr, cmdLineBuf.data(), nullptr, nullptr, FALSE,
-        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
         nullptr,
         wWorkingDir.empty() ? nullptr : wWorkingDir.c_str(),
         &siEx.StartupInfo, &pi);
@@ -164,9 +201,19 @@ inline std::shared_ptr<PtyProcess> launch(const std::string& command, const std:
     DeleteProcThreadAttributeList(siEx.lpAttributeList);
 
     if (!ok) {
+        CloseHandle(proc->hJob);
         ClosePseudoConsole(proc->hpc);
         throw std::runtime_error("CreateProcessW failed");
     }
+    if (!AssignProcessToJobObject(proc->hJob, pi.hProcess)) {
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        CloseHandle(proc->hJob);
+        ClosePseudoConsole(proc->hpc);
+        throw std::runtime_error("AssignProcessToJobObject failed");
+    }
+    ResumeThread(pi.hThread);
 
     proc->hProcess = pi.hProcess;
     proc->hThread = pi.hThread;
@@ -179,6 +226,7 @@ inline void cleanup(const std::shared_ptr<PtyProcess>& proc) {
     if (proc->hPipeOut) CloseHandle(proc->hPipeOut);
     if (proc->hThread) CloseHandle(proc->hThread);
     if (proc->hProcess) CloseHandle(proc->hProcess);
+    if (proc->hJob) CloseHandle(proc->hJob);
 }
 
 } // namespace win_detail
@@ -198,6 +246,7 @@ public:
         auto proc = win_detail::launch(command, working_dir);
 
         std::string buffer;
+        bool truncation_noted = false;
         char readBuf[4096];
         DWORD bytesRead = 0;
         DWORD startTick = GetTickCount();
@@ -208,7 +257,7 @@ public:
             if (avail > 0) {
                 if (!ReadFile(proc->hPipeOut, readBuf, sizeof(readBuf), &bytesRead, nullptr) || bytesRead == 0) break;
                 std::string chunkStr(readBuf, bytesRead);
-                buffer += chunkStr;
+                appendBoundedOutput(buffer, readBuf, bytesRead, truncation_noted);
                 if (on_chunk) on_chunk(chunkStr);
             } else {
                 DWORD waitResult = WaitForSingleObject(proc->hProcess, 20);
@@ -219,8 +268,8 @@ public:
                 }
             }
             if ((GetTickCount() - startTick) / 1000 > (DWORD)timeout_seconds) {
-                TerminateProcess(proc->hProcess, 1);
-                buffer += "\n[timeout: command killed after " + std::to_string(timeout_seconds) + "s]";
+                TerminateJobObject(proc->hJob, 1);
+                buffer += "\n[timeout: command tree killed after " + std::to_string(timeout_seconds) + "s]";
                 break;
             }
         }
@@ -275,12 +324,12 @@ public:
                 }
                 if (proc->killed.load()) {
                     if (on_chunk) on_chunk("\n[stopped by user]\n");
-                    TerminateProcess(proc->hProcess, 1);
+                    TerminateJobObject(proc->hJob, 1);
                     break;
                 }
                 if ((GetTickCount() - startTick) / 1000 > (DWORD)timeout_seconds) {
-                    TerminateProcess(proc->hProcess, 1);
-                    if (on_chunk) on_chunk("\n[timeout: command killed after " + std::to_string(timeout_seconds) + "s]\n");
+                    TerminateJobObject(proc->hJob, 1);
+                    if (on_chunk) on_chunk("\n[timeout: command tree killed after " + std::to_string(timeout_seconds) + "s]\n");
                     break;
                 }
             }
@@ -307,6 +356,7 @@ public:
             proc = it->second;
         }
         proc->killed.store(true);
+        if (proc->hJob) TerminateJobObject(proc->hJob, 1);
         return true;
     }
 };
@@ -345,6 +395,7 @@ public:
         }
 
         std::string buffer;
+        bool truncation_noted = false;
         char chunk[4096];
         fcntl(master_fd, F_SETFL, O_NONBLOCK);
 
@@ -356,7 +407,7 @@ public:
             ssize_t n = read(master_fd, chunk, sizeof(chunk) - 1);
             if (n > 0) {
                 chunk[n] = '\0';
-                buffer += chunk;
+                appendBoundedOutput(buffer, chunk, static_cast<size_t>(n), truncation_noted);
                 if (on_chunk) on_chunk(std::string(chunk, n));
             } else if (n == 0) {
                 break;
@@ -369,9 +420,11 @@ public:
             if (child_done && n <= 0) break;
 
             if (time(nullptr) - start > timeout_seconds) {
-                kill(pid, SIGKILL);
+                // forkpty creates a session/process group led by the child;
+                // target the group so descendants do not survive a timeout.
+                kill(-pid, SIGKILL);
                 waitpid(pid, &status, 0);
-                buffer += "\n[timeout: command killed after " + std::to_string(timeout_seconds) + "s]";
+                buffer += "\n[timeout: command tree killed after " + std::to_string(timeout_seconds) + "s]";
                 break;
             }
             usleep(10000);
@@ -447,9 +500,9 @@ public:
                 }
 
                 if (time(nullptr) - start > timeout_seconds) {
-                    ::kill(pid, SIGKILL);
+                    ::kill(-pid, SIGKILL);
                     waitpid(pid, &status, 0);
-                    if (on_chunk) on_chunk("\n[timeout: command killed after " + std::to_string(timeout_seconds) + "s]\n");
+                    if (on_chunk) on_chunk("\n[timeout: command tree killed after " + std::to_string(timeout_seconds) + "s]\n");
                     break;
                 }
                 usleep(10000);
@@ -463,6 +516,10 @@ public:
             {
                 std::lock_guard<std::mutex> lock(registry_mutex());
                 registry().erase(execution_id);
+            }
+            {
+                std::lock_guard<std::mutex> lock(killed_mutex());
+                killed_flags().erase(execution_id);
             }
 
             int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
@@ -479,10 +536,10 @@ public:
             pid = it->second;
         }
         mark_killed(execution_id);
-        ::kill(pid, SIGTERM);
+        ::kill(-pid, SIGTERM);
         usleep(200000);
         if (::kill(pid, 0) == 0) {
-            ::kill(pid, SIGKILL);
+            ::kill(-pid, SIGKILL);
         }
         return true;
     }
