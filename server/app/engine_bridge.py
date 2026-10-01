@@ -50,8 +50,8 @@ except ModuleNotFoundError as exc:
         f"Recognized extension suffixes: {_ENGINE_SUFFIXES}\n"
         f"Searched:\n  - {_ENGINE_SEARCHED_TEXT}\n"
         f"Built candidates:\n  - {_ENGINE_CANDIDATE_TEXT}\n"
-        "Activate the same virtual environment used for CMake, delete engine/build, "
-        "and rebuild with -DPython_EXECUTABLE set to that environment's python.exe."
+        "Use the same Python installation for dependencies, CMake, and runtime; "
+        "delete engine/build and rebuild with -DPython_EXECUTABLE set to that python.exe."
     )
     raise
 except ImportError as exc:

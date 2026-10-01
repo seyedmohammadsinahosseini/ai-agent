@@ -110,7 +110,7 @@ ai-terminal/
 - Windows 10 version 1809 or newer for ConPTY.
 - Visual Studio 2022 with **Desktop development with C++**.
 - CMake 3.15 or newer.
-- Python 3.11 or newer.
+- Python 3.12 x64 is recommended for the documented Windows build.
 - Flutter SDK with Windows desktop support enabled.
 
 ### Linux/macOS development
@@ -121,78 +121,102 @@ ai-terminal/
 - PTY development libraries available on the host.
 - Flutter if the client will be built or tested.
 
-## Quick start
+## Quick start on Windows (without a virtual environment)
 
-### 1. Create a Python environment
+The supported workflow below does **not** create or activate a virtual
+environment. It uses one explicitly selected global Python installation for
+package installation, native compilation, and backend startup. The examples
+use 64-bit Python 3.12 through the Windows Python Launcher. Do not mix
+unversioned `python`/`pip` commands from another installation into these steps.
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r server/requirements-dev.txt pybind11 cmake
-```
+### 1. Install the Python packages globally for Python 3.12
 
-Windows PowerShell activation:
+Open PowerShell in the repository root:
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -r server\requirements-dev.txt pybind11 cmake
+cd C:\path\to\ai-terminal
+
+py -3.12 -c "import sys; print(sys.executable); print(sys.version)"
+py -3.12 -m pip install --user --upgrade pip
+py -3.12 -m pip install --user -r server\requirements-dev.txt pybind11
 ```
 
-### 2. Build the native engine
+`--user` installs packages into the selected account's normal Python 3.12 user
+site, not into the repository and not into a virtual environment. If Python
+3.12 itself was installed only for your Windows account, a normal install
+without `--user` is also valid; consistency of the interpreter is what matters.
 
-Linux/macOS shell:
+### 2. Build and test the native engine
 
-```bash
-cmake -S engine -B engine/build \
-  -Dpybind11_DIR="$(python -c 'import pybind11; print(pybind11.get_cmake_dir())')" \
+Delete any build directory previously configured with another Python, then
+pass the exact Python 3.12 executable and pybind11 CMake directory explicitly:
+
+```powershell
+$pythonExe = py -3.12 -c "import sys; print(sys.executable)"
+$pythonRoot = Split-Path $pythonExe
+$pybind11Dir = py -3.12 -c "import pybind11; print(pybind11.get_cmake_dir())"
+
+if (Test-Path engine\build) {
+    Remove-Item -Recurse -Force engine\build
+}
+
+cmake -S engine -B engine\build `
+  -G "Visual Studio 17 2022" `
+  -A x64 `
+  -DPython_EXECUTABLE="$pythonExe" `
+  -DPython_ROOT_DIR="$pythonRoot" `
+  -Dpybind11_DIR="$pybind11Dir" `
   -DBUILD_TESTING=ON
-cmake --build engine/build -j4
-ctest --test-dir engine/build --output-on-failure
-```
 
-Windows PowerShell:
-
-```powershell
-$pybind11Dir = python -c "import pybind11; print(pybind11.get_cmake_dir())"
-cmake -S engine -B engine\build -Dpybind11_DIR="$pybind11Dir" -DBUILD_TESTING=ON
 cmake --build engine\build --config Release
 ctest --test-dir engine\build -C Release --output-on-failure
 ```
 
-### 3. Start the local service
+Both native tests must pass. Verify that Python 3.12 can load the resulting
+module before starting FastAPI:
 
-```bash
-cd server
-python -m app.main
+```powershell
+$releaseDir = (Resolve-Path engine\build\Release).Path
+py -3.12 -c "import sys; sys.path.insert(0, sys.argv[1]); import aiterm_engine; print(aiterm_engine.__file__)" $releaseDir
 ```
 
-The default address is `http://127.0.0.1:8765`. The long-lived local bearer token is stored under `~/.ai-terminal` and is deliberately not printed.
+### 3. Start the local service
+
+Keep this first PowerShell window open:
+
+```powershell
+cd server
+py -3.12 -m app.main
+```
+
+The default address is `http://127.0.0.1:8765`. Verify it from another window
+with `Invoke-RestMethod http://127.0.0.1:8765/health`. The long-lived local
+bearer token is stored under `%USERPROFILE%\.ai-terminal` and is deliberately
+not printed.
 
 ### 4. Start the Flutter client
 
-In a second terminal:
+In a second PowerShell window:
 
-```bash
-cd client
+```powershell
+cd C:\path\to\ai-terminal\client
 flutter pub get
 flutter run -d windows
 ```
 
 For the optional same-origin web build:
 
-```bash
-cd client
+```powershell
+cd C:\path\to\ai-terminal\client
 flutter build web
-cd ../server
-python -m app.main
+cd ..\server
+py -3.12 -m app.main
 ```
 
 Then open `http://127.0.0.1:8765`.
 
-See [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for a complete Windows walkthrough.
+See [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for the complete no-virtual-environment
+Windows walkthrough and troubleshooting steps.
 
 ## Provider setup
 
@@ -231,13 +255,30 @@ A non-loopback deployment changes the threat model and is not supported as a pro
 
 ### Python unit and integration tests
 
+Windows with the documented global Python installation:
+
+```powershell
+py -3.12 -m pytest server\tests -q
+```
+
+Linux/macOS:
+
 ```bash
-PYTHONPATH=server pytest -q server/tests
+PYTHONPATH=server python3 -m pytest -q server/tests
 ```
 
 The integration suite automatically skips native execution tests when the C++ module has not been built.
 
 ### Native tests
+
+Windows:
+
+```powershell
+cmake --build engine\build --config Release
+ctest --test-dir engine\build -C Release --output-on-failure
+```
+
+Linux/macOS:
 
 ```bash
 cmake --build engine/build
@@ -253,9 +294,9 @@ flutter test
 
 ### Regenerate product icons
 
-```bash
-python -m pip install Pillow
-python client/tool/generate_icons.py
+```powershell
+py -3.12 -m pip install --user Pillow
+py -3.12 client\tool\generate_icons.py
 ```
 
 ## Local data and privacy

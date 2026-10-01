@@ -85,6 +85,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The
 - Added a complete component, trust-boundary, and data-flow architecture document.
 - Added consolidated architectural decision records.
 - Updated Windows setup instructions for direct PowerShell execution and private token handling.
+- Replaced the virtual-environment setup path with an explicit global Python 3.12 workflow for dependency installation, native compilation, diagnostics, and runtime.
 
 ## Release history
 

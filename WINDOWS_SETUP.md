@@ -32,9 +32,11 @@ because it uses Win32/ConPTY headers.
 Download and install from https://cmake.org/download/ (Windows x64 Installer).
 During install, choose **"Add CMake to the system PATH"**.
 
-### 1.3 Python 3.11+
-Download from https://www.python.org/downloads/windows/
-During install, check **"Add python.exe to PATH"**.
+### 1.3 Python 3.12 x64
+Download the 64-bit Python 3.12 installer from
+https://www.python.org/downloads/windows/. Keep the Python Launcher (`py`)
+enabled during installation. The commands in this guide use `py -3.12`
+explicitly, so no virtual environment or activation step is required.
 
 ### 1.4 Flutter SDK
 1. Download the Windows Flutter SDK zip: https://docs.flutter.dev/get-started/install/windows
@@ -52,42 +54,41 @@ During install, check **"Add python.exe to PATH"**.
    flutter config --enable-windows-desktop
    ```
 
-## 2. Create one Python environment for both build and runtime
+## 2. Use one global Python installation for build and runtime
 
-Open **PowerShell** in the repository root. Do not mix a globally installed
-pybind11 from one Python version with a different Python selected by CMake.
+This project does not require a virtual environment. Open **PowerShell** in the
+repository root and use the Windows Python Launcher to select Python 3.12 for
+every package, build, diagnostic, and runtime command.
 
 ```powershell
 cd C:\path\to\ai-terminal
 
-# Create and activate an isolated environment using your current Python.
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+# Confirm that the selected interpreter is 64-bit Python 3.12.
+py -3.12 -c "import sys, struct; print(sys.executable); print(sys.version); print(struct.calcsize('P') * 8, 'bit')"
 
-python -m pip install --upgrade pip
-python -m pip install -r server\requirements.txt pybind11 cmake
+# Install into the current Windows account's Python 3.12 user site.
+py -3.12 -m pip install --user --upgrade pip
+py -3.12 -m pip install --user -r server\requirements.txt pybind11
 
-# These three paths must all point inside the same .venv/Python installation.
-python -c "import sys; print(sys.executable)"
-python -c "import pybind11; print(pybind11.__file__)"
-python -c "import pybind11; print(pybind11.get_cmake_dir())"
+# All three commands must describe the same Python 3.12 installation.
+py -3.12 -c "import sys; print(sys.executable)"
+py -3.12 -c "import pybind11; print(pybind11.__file__)"
+py -3.12 -c "import pybind11; print(pybind11.get_cmake_dir())"
 ```
 
-If PowerShell blocks environment activation, run this once for the current
-process and activate again:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
-```
+`--user` is not a virtual environment: packages are stored in the normal user
+site for the global Python 3.12 installation. No activation command is needed.
+Do not switch to an unversioned `python` or `pip` command later, because it may
+resolve to Python 3.13 or 3.14 on a machine with several versions installed.
 
 ## 3. Build the C++ engine (native Windows/ConPTY build)
 
-Run these commands from the repository root with `.venv` still active:
+Run these commands from the repository root:
 
 ```powershell
-$pythonExe = (Get-Command python).Source
-$pybind11Dir = python -c "import pybind11; print(pybind11.get_cmake_dir())"
+$pythonExe = py -3.12 -c "import sys; print(sys.executable)"
+$pythonRoot = Split-Path $pythonExe
+$pybind11Dir = py -3.12 -c "import pybind11; print(pybind11.get_cmake_dir())"
 
 # Always remove a build directory previously configured with another Python,
 # generator, architecture, or source revision.
@@ -96,7 +97,10 @@ if (Test-Path engine\build) {
 }
 
 cmake -S engine -B engine\build `
+  -G "Visual Studio 17 2022" `
+  -A x64 `
   -DPython_EXECUTABLE="$pythonExe" `
+  -DPython_ROOT_DIR="$pythonRoot" `
   -Dpybind11_DIR="$pybind11Dir" `
   -DBUILD_TESTING=ON
 
@@ -112,8 +116,8 @@ engine\build\Release\risk_classifier_test.exe
 engine\build\Release\pty_session_test.exe
 ```
 
-The `.pyd` filename must match the Python version printed by
-`python -c "import sys; print(sys.version)"`. This native Windows build uses
+The `.pyd` filename must have a Python 3.12 ABI tag such as `cp312`, matching
+`py -3.12 -c "import sys; print(sys.version)"`. This native Windows build uses
 ConPTY and a Windows Job Object for process-tree termination.
 
 `engine_bridge.py` searches `engine/build/Release/`, `RelWithDebInfo/`, and
@@ -124,11 +128,12 @@ ConPTY and a Windows Job Object for process-tree termination.
 
 ## 4. Set up and run the backend (FastAPI)
 
-Keep the same `.venv` active:
+Use the same global Python 3.12 interpreter used for the native build; no
+activation step is involved:
 
 ```powershell
 cd server
-python -m app.main
+py -3.12 -m app.main
 ```
 
 You should see:
@@ -207,7 +212,7 @@ git pull
 if (Test-Path engine\build) { Remove-Item -Recurse -Force engine\build }
 ```
 
-Then repeat section 3 from a correctly activated `.venv`.
+Then repeat section 3 using the explicit global Python 3.12 commands.
 
 ### CTest cannot find `risk_classifier_test.exe` or `pty_session_test.exe`
 
@@ -228,7 +233,7 @@ git pull
 if (Test-Path engine\build) { Remove-Item -Recurse -Force engine\build }
 ```
 
-Then repeat section 3 with `.venv` active.
+Then repeat section 3 using `py -3.12` consistently.
 
 ### `ModuleNotFoundError: No module named 'aiterm_engine'`
 
@@ -237,44 +242,44 @@ or is not under `engine\build\Release`. Run these diagnostics from the
 repository root in the same PowerShell window used to start the server:
 
 ```powershell
-python -c "import sys; print(sys.executable); print(sys.version)"
-python -c "import importlib.machinery; print(importlib.machinery.EXTENSION_SUFFIXES)"
+py -3.12 -c "import sys; print(sys.executable); print(sys.version)"
+py -3.12 -c "import importlib.machinery; print(importlib.machinery.EXTENSION_SUFFIXES)"
 Get-ChildItem engine\build\Release\aiterm_engine*.pyd
 
 # Test the built module directly, independently of FastAPI.
 $releaseDir = (Resolve-Path engine\build\Release).Path
-python -c "import sys; sys.path.insert(0, sys.argv[1]); import aiterm_engine; print(aiterm_engine.__file__)" $releaseDir
+py -3.12 -c "import sys; sys.path.insert(0, sys.argv[1]); import aiterm_engine; print(aiterm_engine.__file__)" $releaseDir
 ```
 
-If no `.pyd` is listed, the native build did not succeed. If its `cp3XX` tag
-does not match the runtime Python, or the direct import fails, perform this
-clean rebuild using one activated environment:
+If no `.pyd` is listed, the native build did not succeed. If its ABI tag is
+not `cp312`, or the direct import fails, perform this clean global-Python
+rebuild:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\.venv\Scripts\Activate.ps1
+py -3.12 -m pip install --user --upgrade pip
+py -3.12 -m pip install --user -r server\requirements.txt pybind11
 
-python -m pip install --upgrade pip
-python -m pip install -r server\requirements.txt pybind11 cmake
-
-$pythonExe = (Get-Command python).Source
-$pybind11Dir = python -c "import pybind11; print(pybind11.get_cmake_dir())"
-python -c "import sys; print(sys.executable); print(sys.version)"
+$pythonExe = py -3.12 -c "import sys; print(sys.executable)"
+$pythonRoot = Split-Path $pythonExe
+$pybind11Dir = py -3.12 -c "import pybind11; print(pybind11.get_cmake_dir())"
+py -3.12 -c "import sys; print(sys.executable); print(sys.version)"
 
 if (Test-Path engine\build) { Remove-Item -Recurse -Force engine\build }
 cmake -S engine -B engine\build `
+  -G "Visual Studio 17 2022" `
+  -A x64 `
   -DPython_EXECUTABLE="$pythonExe" `
+  -DPython_ROOT_DIR="$pythonRoot" `
   -Dpybind11_DIR="$pybind11Dir" `
   -DBUILD_TESTING=ON
 cmake --build engine\build --config Release
 ctest --test-dir engine\build -C Release --output-on-failure
 
 $releaseDir = (Resolve-Path engine\build\Release).Path
-python -c "import sys; sys.path.insert(0, sys.argv[1]); import aiterm_engine; print(aiterm_engine.__file__)" $releaseDir
+py -3.12 -c "import sys; sys.path.insert(0, sys.argv[1]); import aiterm_engine; print(aiterm_engine.__file__)" $releaseDir
 
 Push-Location server
-python -m app.main
-Pop-Location
+py -3.12 -m app.main
 ```
 
 Do not configure CMake with one Python and launch FastAPI with another.
@@ -284,16 +289,17 @@ directories, and any native candidates it found.
 
 ### CMake finds Python 3.14 but pybind11 under `Python312`
 
-That is a mixed global/user installation. Do not continue with that build.
-Activate `.venv`, install pybind11 through `python -m pip`, verify
-`pybind11.__file__` is inside `.venv`, delete `engine\build`, and configure
-again while passing `-DPython_EXECUTABLE="$pythonExe"`.
+That is a mixed global installation. Do not continue with that build. Delete
+`engine\build`, obtain both `$pythonExe` and `$pybind11Dir` with `py -3.12` as
+shown in section 3, and pass both paths explicitly to CMake. Starting FastAPI
+with `py -3.12 -m app.main` guarantees the runtime uses that same interpreter.
 
 ### Other common issues
 
-- `cmake` cannot find pybind11: run `python -m pip show pybind11` and verify it
-  uses the same activated interpreter as `python -c "import sys; print(sys.executable)"`.
+- `cmake` cannot find pybind11: run
+  `py -3.12 -m pip show pybind11` and
+  `py -3.12 -c "import pybind11; print(pybind11.get_cmake_dir())"`.
 - `flutter doctor` shows a red X next to Visual Studio: re-run Visual Studio
   Installer, enable **Desktop development with C++**, and restart PowerShell.
-- A `.pyd` has the wrong Python tag: delete `engine\build` and rebuild with the
-  same `.venv` used to start FastAPI.
+- A `.pyd` has the wrong Python tag: delete `engine\build`, rebuild using the
+  explicit Python 3.12 paths, and start FastAPI with `py -3.12`.
