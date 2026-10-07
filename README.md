@@ -1,5 +1,8 @@
 # AI Terminal
 
+[![CI](https://github.com/seyedmohammadsinahosseini/ai-terminal/actions/workflows/ci.yml/badge.svg)](https://github.com/seyedmohammadsinahosseini/ai-terminal/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 AI Terminal is a local-first Windows desktop application that turns natural-language requests into reviewed, safety-gated PowerShell commands. It supports bring-your-own-key (BYOK) access to OpenAI, Anthropic, Google Gemini, and OpenAI-compatible providers.
 
 > **Project status:** pre-release. The current build is suitable for development and controlled testing, not unattended use or critical systems.
