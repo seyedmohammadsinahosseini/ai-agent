@@ -7,6 +7,30 @@ AI Terminal is a local-first Windows desktop application that turns natural-lang
 
 > **Project status:** pre-release. The current build is suitable for development and controlled testing, not unattended use or critical systems.
 
+## Screenshots
+
+Captured from the real Flutter web build running against a scripted local
+OpenAI-compatible provider ([docs/demo/mock_provider.py](docs/demo/mock_provider.py)).
+Every risk badge, confirmation dialog, and execution output shown here went
+through the real FastAPI server and native C++ engine — see
+[docs/demo](docs/demo) for the reproducible capture tooling.
+
+### Plan mode — recognized read-only commands auto-run with live output
+
+![Plan mode auto-execution](docs/images/01-plan-mode-auto-execution.png)
+
+### Build mode — nothing changes anything without explicit confirmation
+
+![Pending confirmation banner](docs/images/04-pending-confirmation-banner.png)
+
+![Confirmation dialog](docs/images/05-confirmation-dialog.png)
+
+![Confirmed execution output](docs/images/02-build-mode-confirmed-execution.png)
+
+### Catastrophic commands are permanently blocked
+
+![Blocked catastrophic command](docs/images/03-blocked-catastrophic-command.png)
+
 ## Why this project exists
 
 Terminal automation is powerful, but allowing an AI model to execute arbitrary commands without an independent policy layer is unsafe. AI Terminal separates model suggestions from execution authorization:
@@ -99,6 +123,7 @@ ai-terminal/
 │   ├── app/                API, provider, policy, storage, and security modules
 │   └── tests/              Unit and integration tests
 ├── demo_workspace/         Non-critical sample workspace
+├── docs/                   Product screenshots and demo capture tooling
 ├── ARCHITECTURE.md         System design and trust boundaries
 ├── CHANGELOG.md            Notable changes
 ├── DECISIONS.md            Architectural decision records
